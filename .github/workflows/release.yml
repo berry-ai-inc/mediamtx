@@ -101,47 +101,47 @@ jobs:
             } catch (exc) {}
           }
 
-  dockerhub:
-    needs: binaries
-    runs-on: ubuntu-22.04
+  # dockerhub:
+  #   needs: binaries
+  #   runs-on: ubuntu-22.04
 
-    steps:
-    - uses: actions/checkout@v4
+  #   steps:
+  #   - uses: actions/checkout@v4
 
-    - uses: actions/download-artifact@v4
-      with:
-        name: binaries
-        path: binaries
+  #   - uses: actions/download-artifact@v4
+  #     with:
+  #       name: binaries
+  #       path: binaries
 
-    - run: make dockerhub
-      env:
-        DOCKER_USER: ${{ secrets.DOCKER_USER }}
-        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  #   - run: make dockerhub
+  #     env:
+  #       DOCKER_USER: ${{ secrets.DOCKER_USER }}
+  #       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
-  dockerhub_legacy:
-    needs: dockerhub
-    runs-on: ubuntu-22.04
+  # dockerhub_legacy:
+  #   needs: dockerhub
+  #   runs-on: ubuntu-22.04
 
-    steps:
-    - uses: actions/checkout@v4
+  #   steps:
+  #   - uses: actions/checkout@v4
 
-    - run: make dockerhub-legacy
-      env:
-        DOCKER_USER_LEGACY: ${{ secrets.DOCKER_USER_LEGACY }}
-        DOCKER_PASSWORD_LEGACY: ${{ secrets.DOCKER_PASSWORD_LEGACY }}
+  #   - run: make dockerhub-legacy
+  #     env:
+  #       DOCKER_USER_LEGACY: ${{ secrets.DOCKER_USER_LEGACY }}
+  #       DOCKER_PASSWORD_LEGACY: ${{ secrets.DOCKER_PASSWORD_LEGACY }}
 
-  api_docs:
-    needs: binaries
-    runs-on: ubuntu-22.04
+  # api_docs:
+  #   needs: binaries
+  #   runs-on: ubuntu-22.04
 
-    steps:
-    - uses: actions/checkout@v4
+  #   steps:
+  #   - uses: actions/checkout@v4
 
-    - run: make apidocs
+  #   - run: make apidocs
 
-    - run: mv apidocs/*.html apidocs/index.html
+  #   - run: mv apidocs/*.html apidocs/index.html
 
-    - uses: peaceiris/actions-gh-pages@v3
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./apidocs
+  #   - uses: peaceiris/actions-gh-pages@v3
+  #     with:
+  #       github_token: ${{ secrets.GITHUB_TOKEN }}
+  #       publish_dir: ./apidocs
