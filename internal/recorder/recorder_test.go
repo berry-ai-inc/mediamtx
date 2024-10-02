@@ -194,6 +194,8 @@ func TestRecorder(t *testing.T) {
 				},
 				Parent:       test.NilLogger,
 				restartPause: 1 * time.Millisecond,
+
+				RecordTimestampCSV: true,
 			}
 			w.Initialize()
 
@@ -285,6 +287,10 @@ func TestRecorder(t *testing.T) {
 
 				_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext))
 				require.NoError(t, err)
+
+				csvFi, err2 := os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+"csv"))
+				require.NoError(t, err2)
+				require.Greater(t, csvFi.Size(), int64(0))
 			} else {
 				_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext))
 				require.NoError(t, err)

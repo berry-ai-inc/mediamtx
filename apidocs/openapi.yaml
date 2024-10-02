@@ -334,6 +334,8 @@ components:
           type: string
         recordDeleteAfter:
           type: string
+        recordTimestampCSV:
+          type: boolean
 
         # Publisher source
         overridePublisher:

@@ -814,6 +814,8 @@ func (pa *path) startRecording() {
 			}
 		},
 		Parent: pa,
+
+		RecordTimestampCSV: pa.conf.RecordTimestampCSV,
 	}
 	pa.recorder.Initialize()
 }

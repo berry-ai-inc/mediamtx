@@ -28,6 +28,8 @@ type Recorder struct {
 	OnSegmentComplete OnSegmentCompleteFunc
 	Parent            logger.Writer
 
+	RecordTimestampCSV bool
+
 	restartPause time.Duration
 
 	currentInstance *agentInstance

@@ -4,6 +4,7 @@ package recordcleaner
 import (
 	"context"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
@@ -127,6 +128,7 @@ func (c *Cleaner) processPath(now time.Time, pathName string) error {
 		if now.Sub(seg.Start) > time.Duration(pathConf.RecordDeleteAfter) {
 			c.Log(logger.Debug, "removing %s", seg.Fpath)
 			os.Remove(seg.Fpath)
+			os.Remove(strings.Replace(seg.Fpath, ".mp4", ".csv", 1))
 		}
 	}
 

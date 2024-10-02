@@ -105,6 +105,8 @@ type Path struct {
 	RecordSegmentDuration StringDuration `json:"recordSegmentDuration"`
 	RecordDeleteAfter     StringDuration `json:"recordDeleteAfter"`
 
+	RecordTimestampCSV bool `json:"recordTimestampCSV"`
+
 	// Authentication (deprecated)
 	PublishUser *Credential `json:"publishUser,omitempty"` // deprecated
 	PublishPass *Credential `json:"publishPass,omitempty"` // deprecated
@@ -196,6 +198,7 @@ func (pconf *Path) setDefaults() {
 	pconf.RecordPartDuration = StringDuration(1 * time.Second)
 	pconf.RecordSegmentDuration = 3600 * StringDuration(time.Second)
 	pconf.RecordDeleteAfter = 24 * 3600 * StringDuration(time.Second)
+	pconf.RecordTimestampCSV = false
 
 	// Publisher source
 	pconf.OverridePublisher = true
