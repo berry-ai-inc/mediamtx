@@ -293,6 +293,8 @@ type Conf struct {
 	RecordSegmentDuration *StringDuration `json:"recordSegmentDuration,omitempty"` // deprecated
 	RecordDeleteAfter     *StringDuration `json:"recordDeleteAfter,omitempty"`     // deprecated
 
+	RecordTimestampCSV *bool `json:"recordTimestampCSV,omitempty"` // deprecated
+
 	// Path defaults
 	PathDefaults Path `json:"pathDefaults"`
 
@@ -683,6 +685,9 @@ func (conf *Conf) Validate() error {
 	}
 	if conf.RecordDeleteAfter != nil {
 		conf.PathDefaults.RecordDeleteAfter = *conf.RecordDeleteAfter
+	}
+	if conf.RecordTimestampCSV != nil {
+		conf.PathDefaults.RecordTimestampCSV = *conf.RecordTimestampCSV
 	}
 
 	hasAllOthers := false

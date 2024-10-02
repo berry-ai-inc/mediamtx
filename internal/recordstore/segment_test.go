@@ -24,8 +24,12 @@ func TestFindAllPathsWithSegments(t *testing.T) {
 
 	err = os.WriteFile(filepath.Join(dir, "path1", "2015-05-19_22-15-25-000427.mp4"), []byte{1}, 0o644)
 	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(dir, "path1", "2015-05-19_22-15-25-000427.csv"), []byte{1}, 0o644)
+	require.NoError(t, err)
 
 	err = os.WriteFile(filepath.Join(dir, "path2", "2015-07-19_22-15-25-000427.mp4"), []byte{1}, 0o644)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(dir, "path2", "2015-07-19_22-15-25-000427.csv"), []byte{1}, 0o644)
 	require.NoError(t, err)
 
 	paths := FindAllPathsWithSegments(map[string]*conf.Path{
@@ -57,8 +61,12 @@ func TestFindSegments(t *testing.T) {
 
 	err = os.WriteFile(filepath.Join(dir, "path1", "2015-05-19_22-15-25-000427.mp4"), []byte{1}, 0o644)
 	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(dir, "path1", "2015-05-19_22-15-25-000427.csv"), []byte{1}, 0o644)
+	require.NoError(t, err)
 
 	err = os.WriteFile(filepath.Join(dir, "path1", "2016-05-19_22-15-25-000427.mp4"), []byte{1}, 0o644)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(dir, "path1", "2016-05-19_22-15-25-000427.csv"), []byte{1}, 0o644)
 	require.NoError(t, err)
 
 	segments, err := FindSegments(
@@ -97,8 +105,12 @@ func TestFindSegmentsInTimespan(t *testing.T) {
 
 	err = os.WriteFile(filepath.Join(dir, "path1", "2015-05-19_22-15-25-000427.mp4"), []byte{1}, 0o644)
 	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(dir, "path1", "2015-05-19_22-15-25-000427.csv"), []byte{1}, 0o644)
+	require.NoError(t, err)
 
 	err = os.WriteFile(filepath.Join(dir, "path1", "2016-05-19_22-15-25-000427.mp4"), []byte{1}, 0o644)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(dir, "path1", "2016-05-19_22-15-25-000427.csv"), []byte{1}, 0o644)
 	require.NoError(t, err)
 
 	segments, err := FindSegmentsInTimespan(
