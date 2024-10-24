@@ -17,7 +17,6 @@ type OnSegmentCompleteFunc = func(path string, duration time.Duration)
 
 // Recorder writes recordings to disk.
 type Recorder struct {
-	WriteQueueSize    int
 	PathFormat        string
 	Format            conf.RecordFormat
 	PartDuration      time.Duration
@@ -32,7 +31,7 @@ type Recorder struct {
 
 	restartPause time.Duration
 
-	currentInstance *agentInstance
+	currentInstance *recorderInstance
 
 	terminate chan struct{}
 	done      chan struct{}
@@ -55,7 +54,7 @@ func (w *Recorder) Initialize() {
 	w.terminate = make(chan struct{})
 	w.done = make(chan struct{})
 
-	w.currentInstance = &agentInstance{
+	w.currentInstance = &recorderInstance{
 		agent: w,
 	}
 	w.currentInstance.initialize()
@@ -93,7 +92,7 @@ func (w *Recorder) run() {
 			return
 		}
 
-		w.currentInstance = &agentInstance{
+		w.currentInstance = &recorderInstance{
 			agent: w,
 		}
 		w.currentInstance.initialize()
