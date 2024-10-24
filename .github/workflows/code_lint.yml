@@ -2,9 +2,9 @@ name: code_lint
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, berry ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, berry ]
 
 jobs:
   golangci_lint:
