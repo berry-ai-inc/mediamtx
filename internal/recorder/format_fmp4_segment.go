@@ -114,7 +114,7 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *sample, dtsDur
 		}
 	}
 	if s.csvFi != nil {
-		s.csvFi.WriteString(sample.ntp.Format("2006-01-02T15:04:05.000000Z,\n"))
+		s.csvFi.WriteString(sample.ntp.UTC().Format("2006-01-02T15:04:05.000000Z,\n"))
 	}
 
 	return s.curPart.write(track, sample, dtsDuration)
