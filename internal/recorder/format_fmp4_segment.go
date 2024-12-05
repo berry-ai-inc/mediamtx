@@ -58,7 +58,7 @@ func (s *formatFMP4Segment) close() error {
 	}
 
 	if s.fi != nil {
-		s.f.ai.Log(logger.Debug, "closing segment %s", s.path)
+		s.f.ri.Log(logger.Debug, "closing segment %s", s.path)
 		err2 := s.fi.Close()
 		if err == nil {
 			err = err2
@@ -66,7 +66,7 @@ func (s *formatFMP4Segment) close() error {
 
 		if err2 == nil {
 			duration := s.lastDTS - s.startDTS
-			s.f.ai.agent.OnSegmentComplete(s.path, duration)
+			s.f.ri.rec.OnSegmentComplete(s.path, duration)
 		}
 	}
 
@@ -88,7 +88,7 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *sample, dtsDur
 		}
 		s.curPart.initialize()
 		s.f.nextSequenceNumber++
-	} else if s.curPart.duration() >= s.f.ai.agent.PartDuration {
+	} else if s.curPart.duration() >= s.f.ri.rec.PartDuration {
 		err := s.curPart.close()
 		s.curPart = nil
 
@@ -105,8 +105,8 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *sample, dtsDur
 		s.f.nextSequenceNumber++
 	}
 
-	if s.f.ai.agent.RecordTimestampCSV && s.csvFi == nil {
-		path := recordstore.Path{Start: s.startNTP}.Encode(s.f.ai.pathFormat)
+	if s.f.ri.rec.RecordTimestampCSV && s.csvFi == nil {
+		path := recordstore.Path{Start: s.startNTP}.Encode(s.f.ri.pathFormat)
 		path = strings.Replace(path, ".mp4", ".csv", 1)
 		fi, err := os.Create(path)
 		if err == nil {
