@@ -105,16 +105,18 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *sample, dtsDur
 		s.f.nextSequenceNumber++
 	}
 
-	if s.f.ri.rec.RecordTimestampCSV && s.csvFi == nil {
-		path := recordstore.Path{Start: s.startNTP}.Encode(s.f.ri.pathFormat)
-		path = strings.Replace(path, ".mp4", ".csv", 1)
-		fi, err := os.Create(path)
-		if err == nil {
-			s.csvFi = fi
+	if track.initTrack.Codec.IsVideo() {
+		if s.f.ri.rec.RecordTimestampCSV && s.csvFi == nil {
+			path := recordstore.Path{Start: s.startNTP}.Encode(s.f.ri.pathFormat)
+			path = strings.Replace(path, ".mp4", ".csv", 1)
+			fi, err := os.Create(path)
+			if err == nil {
+				s.csvFi = fi
+			}
 		}
-	}
-	if s.csvFi != nil {
-		s.csvFi.WriteString(sample.ntp.UTC().Format("2006-01-02T15:04:05.000000Z,\n"))
+		if s.csvFi != nil {
+			s.csvFi.WriteString(sample.ntp.UTC().Format("2006-01-02T15:04:05.000000Z,\n"))
+		}
 	}
 
 	return s.curPart.write(track, sample, dtsDuration)
