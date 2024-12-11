@@ -27,6 +27,7 @@ type Recorder struct {
 	OnSegmentComplete OnSegmentCompleteFunc
 	Parent            logger.Writer
 
+	RecordAudio        bool
 	RecordTimestampCSV bool
 
 	restartPause time.Duration

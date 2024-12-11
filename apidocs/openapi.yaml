@@ -334,6 +334,8 @@ components:
           type: string
         recordDeleteAfter:
           type: string
+        recordAudio:
+          type: boolean
         recordTimestampCSV:
           type: boolean
 

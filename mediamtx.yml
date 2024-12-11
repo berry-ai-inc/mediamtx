@@ -470,7 +470,9 @@ pathDefaults:
   # Delete segments after this timespan.
   # Set to 0s to disable automatic deletion.
   recordDeleteAfter: 24h
-  # Record frame timestamps in a csv file.
+  # Record audio track or not, only applicable in for fmp4, mpegts always record audio
+  recordAudio: no
+  # Record frame timestamps in a csv file, only applicable for fmp4
   recordTimestampCSV: no
 
   ###############################################

@@ -119,5 +119,9 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *sample, dtsDur
 		}
 	}
 
+	if !track.initTrack.Codec.IsVideo() && !s.f.ri.rec.RecordAudio {
+		return nil
+	}
+
 	return s.curPart.write(track, sample, dtsDuration)
 }

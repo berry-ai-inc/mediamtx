@@ -815,6 +815,7 @@ func (pa *path) startRecording() {
 		},
 		Parent: pa,
 
+		RecordAudio:        pa.conf.RecordAudio,
 		RecordTimestampCSV: pa.conf.RecordTimestampCSV,
 	}
 	pa.recorder.Initialize()

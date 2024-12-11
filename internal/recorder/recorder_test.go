@@ -122,199 +122,243 @@ func TestRecorder(t *testing.T) {
 		}
 	}
 
-	for _, ca := range []string{"fmp4", "mpegts"} {
-		t.Run(ca, func(t *testing.T) {
-			stream, err := stream.New(
-				512,
-				1460,
-				desc,
-				true,
-				test.NilLogger,
-			)
-			require.NoError(t, err)
-			defer stream.Close()
+	for _, recAudio := range []bool{false, true} {
+		for _, ca := range []string{"fmp4", "mpegts"} {
+			t.Run(ca, func(t *testing.T) {
+				stream, err := stream.New(
+					512,
+					1460,
+					desc,
+					true,
+					test.NilLogger,
+				)
+				require.NoError(t, err)
+				defer stream.Close()
 
-			dir, err := os.MkdirTemp("", "mediamtx-agent")
-			require.NoError(t, err)
-			defer os.RemoveAll(dir)
+				dir, err := os.MkdirTemp("", "mediamtx-agent")
+				require.NoError(t, err)
+				defer os.RemoveAll(dir)
 
-			recordPath := filepath.Join(dir, "%path/%Y-%m-%d_%H-%M-%S-%f")
+				recordPath := filepath.Join(dir, "%path/%Y-%m-%d_%H-%M-%S-%f")
 
-			segCreated := make(chan struct{}, 4)
-			segDone := make(chan struct{}, 4)
+				segCreated := make(chan struct{}, 4)
+				segDone := make(chan struct{}, 4)
 
-			var f conf.RecordFormat
-			if ca == "fmp4" {
-				f = conf.RecordFormatFMP4
-			} else {
-				f = conf.RecordFormatMPEGTS
-			}
+				var f conf.RecordFormat
+				if ca == "fmp4" {
+					f = conf.RecordFormatFMP4
+				} else {
+					f = conf.RecordFormatMPEGTS
+				}
 
-			var ext string
-			if ca == "fmp4" {
-				ext = "mp4"
-			} else {
-				ext = "ts"
-			}
+				var ext string
+				if ca == "fmp4" {
+					ext = "mp4"
+				} else {
+					ext = "ts"
+				}
 
-			n := 0
+				n := 0
 
-			w := &Recorder{
-				PathFormat:      recordPath,
-				Format:          f,
-				PartDuration:    100 * time.Millisecond,
-				SegmentDuration: 1 * time.Second,
-				PathName:        "mypath",
-				Stream:          stream,
-				OnSegmentCreate: func(segPath string) {
-					switch n {
-					case 0:
-						require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext), segPath)
-					case 1:
-						require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext), segPath)
-					default:
-						require.Equal(t, filepath.Join(dir, "mypath", "2010-05-20_22-15-25-000000."+ext), segPath)
-					}
-					segCreated <- struct{}{}
-				},
-				OnSegmentComplete: func(segPath string, du time.Duration) {
-					switch n {
-					case 0:
-						require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext), segPath)
-						require.Equal(t, 2*time.Second, du)
-					case 1:
-						require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext), segPath)
-						require.Equal(t, 100*time.Millisecond, du)
-					default:
-						require.Equal(t, filepath.Join(dir, "mypath", "2010-05-20_22-15-25-000000."+ext), segPath)
-						require.Equal(t, 100*time.Millisecond, du)
-					}
-					n++
-					segDone <- struct{}{}
-				},
-				Parent:       test.NilLogger,
-				restartPause: 1 * time.Millisecond,
+				w := &Recorder{
+					PathFormat:      recordPath,
+					Format:          f,
+					PartDuration:    100 * time.Millisecond,
+					SegmentDuration: 1 * time.Second,
+					PathName:        "mypath",
+					Stream:          stream,
+					OnSegmentCreate: func(segPath string) {
+						switch n {
+						case 0:
+							require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext), segPath)
+						case 1:
+							require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext), segPath)
+						default:
+							require.Equal(t, filepath.Join(dir, "mypath", "2010-05-20_22-15-25-000000."+ext), segPath)
+						}
+						segCreated <- struct{}{}
+					},
+					OnSegmentComplete: func(segPath string, du time.Duration) {
+						switch n {
+						case 0:
+							require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext), segPath)
+							require.Equal(t, 2*time.Second, du)
+						case 1:
+							require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext), segPath)
+							require.Equal(t, 100*time.Millisecond, du)
+						default:
+							require.Equal(t, filepath.Join(dir, "mypath", "2010-05-20_22-15-25-000000."+ext), segPath)
+							require.Equal(t, 100*time.Millisecond, du)
+						}
+						n++
+						segDone <- struct{}{}
+					},
+					Parent:       test.NilLogger,
+					restartPause: 1 * time.Millisecond,
 
-				RecordTimestampCSV: true,
-			}
-			w.Initialize()
+					RecordAudio:        recAudio,
+					RecordTimestampCSV: true,
+				}
+				w.Initialize()
 
-			writeToStream(stream,
-				50*90000,
-				time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC))
+				writeToStream(stream,
+					50*90000,
+					time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC))
 
-			writeToStream(stream,
-				52*90000,
-				time.Date(2008, 5, 20, 22, 16, 25, 0, time.UTC))
+				writeToStream(stream,
+					52*90000,
+					time.Date(2008, 5, 20, 22, 16, 25, 0, time.UTC))
 
-			// simulate a write error
-			stream.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-				Base: unit.Base{
-					PTS: 0,
-				},
-				AU: [][]byte{
-					{5}, // IDR
-				},
-			})
+				// simulate a write error
+				stream.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
+					Base: unit.Base{
+						PTS: 0,
+					},
+					AU: [][]byte{
+						{5}, // IDR
+					},
+				})
 
-			for i := 0; i < 2; i++ {
-				<-segCreated
-				<-segDone
-			}
+				for i := 0; i < 2; i++ {
+					<-segCreated
+					<-segDone
+				}
 
-			if ca == "fmp4" {
-				var init fmp4.Init
+				if ca == "fmp4" {
+					var init fmp4.Init
 
-				func() {
-					f, err2 := os.Open(filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext))
-					require.NoError(t, err2)
-					defer f.Close()
+					func() {
+						f, err2 := os.Open(filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext))
+						require.NoError(t, err2)
+						defer f.Close()
 
-					err2 = init.Unmarshal(f)
-					require.NoError(t, err2)
-				}()
+						err2 = init.Unmarshal(f)
+						require.NoError(t, err2)
+					}()
 
-				require.Equal(t, fmp4.Init{
-					Tracks: []*fmp4.InitTrack{
-						{
-							ID:        1,
-							TimeScale: 90000,
-							Codec: &fmp4.CodecH264{
-								SPS: test.FormatH264.SPS,
-								PPS: test.FormatH264.PPS,
+					require.Equal(t, fmp4.Init{
+						Tracks: []*fmp4.InitTrack{
+							{
+								ID:        1,
+								TimeScale: 90000,
+								Codec: &fmp4.CodecH264{
+									SPS: test.FormatH264.SPS,
+									PPS: test.FormatH264.PPS,
+								},
 							},
-						},
-						{
-							ID:        2,
-							TimeScale: 90000,
-							Codec: &fmp4.CodecH265{
-								VPS: test.FormatH265.VPS,
-								SPS: test.FormatH265.SPS,
-								PPS: test.FormatH265.PPS,
+							{
+								ID:        2,
+								TimeScale: 90000,
+								Codec: &fmp4.CodecH265{
+									VPS: test.FormatH265.VPS,
+									SPS: test.FormatH265.SPS,
+									PPS: test.FormatH265.PPS,
+								},
 							},
-						},
-						{
-							ID:        3,
-							TimeScale: 44100,
-							Codec: &fmp4.CodecMPEG4Audio{
-								Config: mpeg4audio.Config{
-									Type:         2,
+							{
+								ID:        3,
+								TimeScale: 44100,
+								Codec: &fmp4.CodecMPEG4Audio{
+									Config: mpeg4audio.Config{
+										Type:         2,
+										SampleRate:   44100,
+										ChannelCount: 2,
+									},
+								},
+							},
+							{
+								ID:        4,
+								TimeScale: 8000,
+								Codec: &fmp4.CodecLPCM{
+									BitDepth:     16,
+									SampleRate:   8000,
+									ChannelCount: 1,
+								},
+							},
+							{
+								ID:        5,
+								TimeScale: 44100,
+								Codec: &fmp4.CodecLPCM{
+									BitDepth:     16,
 									SampleRate:   44100,
 									ChannelCount: 2,
 								},
 							},
 						},
-						{
-							ID:        4,
-							TimeScale: 8000,
-							Codec: &fmp4.CodecLPCM{
-								BitDepth:     16,
-								SampleRate:   8000,
-								ChannelCount: 1,
-							},
-						},
-						{
-							ID:        5,
-							TimeScale: 44100,
-							Codec: &fmp4.CodecLPCM{
-								BitDepth:     16,
-								SampleRate:   44100,
-								ChannelCount: 2,
-							},
-						},
-					},
-				}, init)
+					}, init)
 
-				_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext))
+					_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext))
+					require.NoError(t, err)
+
+					csvFi, err2 := os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+"csv"))
+					require.NoError(t, err2)
+					require.Greater(t, csvFi.Size(), int64(0))
+				} else {
+					_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext))
+					require.NoError(t, err)
+
+					_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext))
+					require.NoError(t, err)
+				}
+
+				time.Sleep(50 * time.Millisecond)
+
+				writeToStream(stream,
+					300*90000,
+					time.Date(2010, 5, 20, 22, 15, 25, 0, time.UTC))
+
+				time.Sleep(50 * time.Millisecond)
+
+				w.Close()
+
+				<-segCreated
+				<-segDone
+
+				_, err = os.Stat(filepath.Join(dir, "mypath", "2010-05-20_22-15-25-000000."+ext))
 				require.NoError(t, err)
 
-				csvFi, err2 := os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+"csv"))
-				require.NoError(t, err2)
-				require.Greater(t, csvFi.Size(), int64(0))
-			} else {
-				_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext))
-				require.NoError(t, err)
+				if ext == "mp4" {
+					byts, err := os.ReadFile(filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000.mp4"))
+					require.NoError(t, err)
 
-				_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext))
-				require.NoError(t, err)
-			}
+					var parts fmp4.Parts
+					err = parts.Unmarshal(byts)
+					require.NoError(t, err)
 
-			time.Sleep(50 * time.Millisecond)
+					foundTrack1 := false
+					foundTrack2 := false
+					foundTrack3 := false
+					foundTrack4 := false
+					foundTrack5 := false
 
-			writeToStream(stream,
-				300*90000,
-				time.Date(2010, 5, 20, 22, 15, 25, 0, time.UTC))
+					for _, part := range parts {
+						for _, track := range part.Tracks {
+							if track.ID == 1 {
+								foundTrack1 = true
+							}
+							if track.ID == 2 {
+								foundTrack2 = true
+							}
+							if track.ID == 3 {
+								foundTrack3 = true
+							}
+							if track.ID == 4 {
+								foundTrack4 = true
+							}
+							if track.ID == 5 {
+								foundTrack5 = true
+							}
+						}
+					}
 
-			time.Sleep(50 * time.Millisecond)
-
-			w.Close()
-
-			<-segCreated
-			<-segDone
-
-			_, err = os.Stat(filepath.Join(dir, "mypath", "2010-05-20_22-15-25-000000."+ext))
-			require.NoError(t, err)
-		})
+					require.Equal(t, true, foundTrack1)
+					require.Equal(t, true, foundTrack2)
+					require.Equal(t, recAudio, foundTrack3)
+					require.Equal(t, recAudio, foundTrack4)
+					require.Equal(t, recAudio, foundTrack5)
+				}
+			})
+		}
 	}
 }
 
@@ -367,6 +411,7 @@ func TestRecorderFMP4NegativeDTS(t *testing.T) {
 		PathName:        "mypath",
 		Stream:          stream,
 		Parent:          test.NilLogger,
+		RecordAudio:     true,
 	}
 	w.Initialize()
 
