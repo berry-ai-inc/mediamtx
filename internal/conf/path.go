@@ -105,6 +105,7 @@ type Path struct {
 	RecordSegmentDuration StringDuration `json:"recordSegmentDuration"`
 	RecordDeleteAfter     StringDuration `json:"recordDeleteAfter"`
 
+	RecordAudio        bool `json:"recordAudio"`
 	RecordTimestampCSV bool `json:"recordTimestampCSV"`
 
 	// Authentication (deprecated)
@@ -198,6 +199,7 @@ func (pconf *Path) setDefaults() {
 	pconf.RecordPartDuration = StringDuration(1 * time.Second)
 	pconf.RecordSegmentDuration = 3600 * StringDuration(time.Second)
 	pconf.RecordDeleteAfter = 24 * 3600 * StringDuration(time.Second)
+	pconf.RecordAudio = false
 	pconf.RecordTimestampCSV = false
 
 	// Publisher source

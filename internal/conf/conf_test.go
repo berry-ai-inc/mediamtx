@@ -57,6 +57,7 @@ func TestConfFromFile(t *testing.T) {
 			RecordPartDuration:         StringDuration(1 * time.Second),
 			RecordSegmentDuration:      3600000000000,
 			RecordDeleteAfter:          86400000000000,
+			RecordAudio:                false,
 			RecordTimestampCSV:         false,
 			OverridePublisher:          true,
 			RPICameraWidth:             1920,
