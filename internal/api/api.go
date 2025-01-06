@@ -64,7 +64,7 @@ func recordingsOfPath(
 		Name: pathName,
 	}
 
-	segments, _ := recordstore.FindSegments(pathConf, pathName)
+	segments, _ := recordstore.FindSegments(pathConf, pathName, nil, nil)
 
 	ret.Segments = make([]*defs.APIRecordingSegment, len(segments))
 
@@ -136,7 +136,7 @@ type API struct {
 	ServerCert     string
 	AllowOrigin    string
 	TrustedProxies conf.IPNetworks
-	ReadTimeout    conf.StringDuration
+	ReadTimeout    conf.Duration
 	Conf           *conf.Conf
 	AuthManager    apiAuthManager
 	PathManager    PathManager
@@ -329,7 +329,7 @@ func (a *API) onConfigGlobalPatch(ctx *gin.Context) {
 
 	newConf.PatchGlobal(&c)
 
-	err = newConf.Validate()
+	err = newConf.Validate(nil)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
@@ -367,7 +367,7 @@ func (a *API) onConfigPathDefaultsPatch(ctx *gin.Context) {
 
 	newConf.PatchPathDefaults(&p)
 
-	err = newConf.Validate()
+	err = newConf.Validate(nil)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
@@ -448,7 +448,7 @@ func (a *API) onConfigPathsAdd(ctx *gin.Context) { //nolint:dupl
 		return
 	}
 
-	err = newConf.Validate()
+	err = newConf.Validate(nil)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
@@ -489,7 +489,7 @@ func (a *API) onConfigPathsPatch(ctx *gin.Context) { //nolint:dupl
 		return
 	}
 
-	err = newConf.Validate()
+	err = newConf.Validate(nil)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
@@ -530,7 +530,7 @@ func (a *API) onConfigPathsReplace(ctx *gin.Context) { //nolint:dupl
 		return
 	}
 
-	err = newConf.Validate()
+	err = newConf.Validate(nil)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
@@ -564,7 +564,7 @@ func (a *API) onConfigPathsDelete(ctx *gin.Context) {
 		return
 	}
 
-	err = newConf.Validate()
+	err = newConf.Validate(nil)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
