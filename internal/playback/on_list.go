@@ -187,7 +187,19 @@ func (s *Server) onList(ctx *gin.Context) {
 
 	if start != nil {
 		firstEntry := entries[0]
-		if firstEntry.Start.Before(*start) {
+
+		// when start is placed in a gap between the first and second segment,
+		// or when there's no second segment,
+		// the first segment is erroneously included with a negative duration.
+		// remove it.
+		if firstEntry.Start.Add(time.Duration(firstEntry.Duration)).Before(*start) {
+			entries = entries[1:]
+
+			if len(entries) == 0 {
+				s.writeError(ctx, http.StatusNotFound, recordstore.ErrNoSegmentsFound)
+				return
+			}
+		} else if firstEntry.Start.Before(*start) {
 			entries[0].Duration -= listEntryDuration(start.Sub(firstEntry.Start))
 			entries[0].Start = *start
 		}

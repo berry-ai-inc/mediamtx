@@ -18,7 +18,7 @@ import (
 	"github.com/bluenviron/mediacommon/pkg/formats/mpegts"
 	srt "github.com/datarhei/gosrt"
 	"github.com/pion/rtp"
-	pwebrtc "github.com/pion/webrtc/v3"
+	pwebrtc "github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
 
 	"github.com/bluenviron/mediamtx/internal/protocols/rtmp"
@@ -313,7 +313,7 @@ webrtc_sessions_bytes_sent 0
 			<-terminate
 		}()
 
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(500*time.Millisecond + 2*time.Second)
 
 		bo := httpPullFile(t, hc, "http://localhost:9998/metrics")
 

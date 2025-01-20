@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pion/ice/v2"
+	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
 	"github.com/pion/sdp/v3"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/logger"
@@ -115,31 +115,49 @@ func (co *PeerConnection) Start() error {
 		settingsEngine.SetICEUDPMux(co.ICEUDPMux)
 	}
 
+	if co.LocalRandomUDP {
+		settingsEngine.SetLocalRandomUDP(true)
+	}
+
 	if co.ICETCPMux != nil {
 		settingsEngine.SetICETCPMux(co.ICETCPMux)
 		networkTypes = append(networkTypes, webrtc.NetworkTypeTCP4)
 	}
 
-	if co.LocalRandomUDP {
-		settingsEngine.SetICEUDPRandom(true)
-	}
-
 	settingsEngine.SetNetworkTypes(networkTypes)
+
+	settingsEngine.SetIncludeLoopbackCandidate(true)
 
 	mediaEngine := &webrtc.MediaEngine{}
 
 	if co.Publish {
 		videoSetupped := false
 		audioSetupped := false
+		for _, tr := range co.OutgoingTracks {
+			if tr.isVideo() {
+				videoSetupped = true
+			} else {
+				audioSetupped = true
+			}
+		}
+
+		// When audio is not used, a track has to be present anyway,
+		// otherwise video is not displayed on Firefox and Chrome.
+		if !audioSetupped {
+			co.OutgoingTracks = append(co.OutgoingTracks, &OutgoingTrack{
+				Caps: webrtc.RTPCodecCapability{
+					MimeType:  webrtc.MimeTypePCMU,
+					ClockRate: 8000,
+				},
+			})
+		}
 
 		for _, tr := range co.OutgoingTracks {
 			var codecType webrtc.RTPCodecType
 			if tr.isVideo() {
 				codecType = webrtc.RTPCodecTypeVideo
-				videoSetupped = true
 			} else {
 				codecType = webrtc.RTPCodecTypeAudio
-				audioSetupped = true
 			}
 
 			err := mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
@@ -151,8 +169,8 @@ func (co *PeerConnection) Start() error {
 			}
 		}
 
-		// always register at least a video and a audio codec
-		// otherwise handshake will fail or audio will be muted on some clients (like Firefox)
+		// When video is not used, a track must not be added but a codec has to present.
+		// Otherwise audio is muted on Firefox and Chrome.
 		if !videoSetupped {
 			err := mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
 				RTPCodecCapability: webrtc.RTPCodecCapability{
@@ -161,18 +179,6 @@ func (co *PeerConnection) Start() error {
 				},
 				PayloadType: 96,
 			}, webrtc.RTPCodecTypeVideo)
-			if err != nil {
-				return err
-			}
-		}
-		if !audioSetupped {
-			err := mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
-				RTPCodecCapability: webrtc.RTPCodecCapability{
-					MimeType:  webrtc.MimeTypePCMU,
-					ClockRate: 8000,
-				},
-				PayloadType: 0,
-			}, webrtc.RTPCodecTypeAudio)
 			if err != nil {
 				return err
 			}
@@ -230,7 +236,7 @@ func (co *PeerConnection) Start() error {
 			}
 		}
 	} else {
-		_, err = co.wr.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo, webrtc.RtpTransceiverInit{
+		_, err = co.wr.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo, webrtc.RTPTransceiverInit{
 			Direction: webrtc.RTPTransceiverDirectionRecvonly,
 		})
 		if err != nil {
@@ -238,7 +244,7 @@ func (co *PeerConnection) Start() error {
 			return err
 		}
 
-		_, err = co.wr.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{
+		_, err = co.wr.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
 			Direction: webrtc.RTPTransceiverDirectionRecvonly,
 		})
 		if err != nil {
