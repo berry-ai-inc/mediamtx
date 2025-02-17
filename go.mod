@@ -7,11 +7,11 @@ require (
 	github.com/MicahParks/jwkset v0.8.0
 	github.com/MicahParks/keyfunc/v3 v3.3.10
 	github.com/abema/go-mp4 v1.4.1
-	github.com/alecthomas/kong v1.6.1
+	github.com/alecthomas/kong v1.7.0
 	github.com/asticode/go-astits v1.13.0
 	github.com/bluenviron/gohlslib/v2 v2.1.3
-	github.com/bluenviron/gortsplib/v4 v4.12.2
-	github.com/bluenviron/mediacommon v1.13.4
+	github.com/bluenviron/gortsplib/v4 v4.12.3
+	github.com/bluenviron/mediacommon v1.14.0
 	github.com/datarhei/gosrt v0.8.0
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/gin-contrib/pprof v1.5.2
@@ -26,15 +26,15 @@ require (
 	github.com/matthewhartstonge/argon2 v1.1.1
 	github.com/pion/ice/v4 v4.0.5
 	github.com/pion/interceptor v0.1.37
-	github.com/pion/logging v0.2.2
+	github.com/pion/logging v0.2.3
 	github.com/pion/rtcp v1.2.15
 	github.com/pion/rtp v1.8.11
 	github.com/pion/sdp/v3 v3.0.10
 	github.com/pion/webrtc/v4 v4.0.7
 	github.com/stretchr/testify v1.10.0
 	golang.org/x/crypto v0.32.0
-	golang.org/x/sys v0.29.0
-	golang.org/x/term v0.28.0
+	golang.org/x/sys v0.30.0
+	golang.org/x/term v0.29.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
