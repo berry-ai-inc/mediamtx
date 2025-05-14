@@ -80,6 +80,7 @@ func TestConfFromFile(t *testing.T) {
 			RPICameraBitrate:           5000000,
 			RPICameraProfile:           "main",
 			RPICameraLevel:             "4.1",
+			RPICameraJPEGQuality:       60,
 			RunOnDemandStartTimeout:    5 * Duration(time.Second),
 			RunOnDemandCloseAfter:      10 * Duration(time.Second),
 		}, pa)
@@ -268,7 +269,7 @@ func TestConfErrors(t *testing.T) {
 			"yaml: unmarshal errors:\n  line 2: key \"paths\" already set in map",
 		},
 		{
-			"non existent parameter 1",
+			"non existent parameter",
 			`invalid: param`,
 			"json: unknown field \"invalid\"",
 		},
@@ -310,11 +311,17 @@ func TestConfErrors(t *testing.T) {
 			"invalid ICE server: 'testing'",
 		},
 		{
-			"non existent parameter 2",
+			"non existent parameter in path",
 			"paths:\n" +
 				"  mypath:\n" +
 				"    invalid: parameter\n",
 			"json: unknown field \"invalid\"",
+		},
+		{
+			"non existent parameter in auth",
+			"authInternalUsers:\n" +
+				"- users: test\n",
+			"json: unknown field \"users\"",
 		},
 		{
 			"invalid path name",
@@ -361,20 +368,86 @@ func TestConfErrors(t *testing.T) {
 			`all_others, all and '~^.*$' are aliases`,
 		},
 		{
-			"playback",
-			"playback: yes\n" +
-				"paths:\n" +
-				"  my_path:\n" +
-				"    recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S",
-			`record path './recordings/%path/%Y-%m-%d_%H-%M-%S' is missing one of the` +
-				` mandatory elements for the playback server to work: %Y %m %d %H %M %S %f`,
-		},
-		{
 			"jwt claim key empty",
 			"authMethod: jwt\n" +
 				"authJWTJWKS: https://not-real.com\n" +
 				"authJWTClaimKey: \"\"",
 			"'authJWTClaimKey' is empty",
+		},
+		{
+			"invalid rtsp auth methods",
+			"rtspAuthMethods: []",
+			"at least one 'rtspAuthMethods' must be provided",
+		},
+		{
+			"invalid fallback",
+			"paths:\n" +
+				"  my_path:\n" +
+				"    fallback: invalid://invalid",
+			`'invalid://invalid' is not a valid RTSP URL`,
+		},
+		{
+			"invalid source redirect",
+			"paths:\n" +
+				"  my_path:\n" +
+				"    source: redirect\n" +
+				"    sourceRedirect: invalid://invalid",
+			`'invalid://invalid' is not a valid RTSP URL`,
+		},
+		{
+			"useless source redirect",
+			"paths:\n" +
+				"  my_path:\n" +
+				"    sourceRedirect: invalid://invalid",
+			`'sourceRedirect' is useless when source is not 'redirect'`,
+		},
+		{
+			"invalid user",
+			"authInternalUsers:\n" +
+				"- user:\n" +
+				"  pass: test\n" +
+				"  permissions:\n" +
+				"  - action: publish\n",
+			"empty usernames are not supported",
+		},
+		{
+			"invalid pass",
+			"authInternalUsers:\n" +
+				"- user: any\n" +
+				"  pass: test\n" +
+				"  permissions:\n" +
+				"  - action: publish\n",
+			`using a password with 'any' user is not supported`,
+		},
+		{
+			"invalid record path 1",
+			"paths:\n" +
+				"  my_path:\n" +
+				"    recordPath: invalid\n",
+			`'recordPath' must contain %path`,
+		},
+		{
+			"invalid record path 2",
+			"paths:\n" +
+				"  my_path:\n" +
+				"    recordPath: '%path/invalid'\n",
+			`'recordPath' must contain either %s or %Y %m %d %H %M %S`,
+		},
+		{
+			"invalid record path 3",
+			"playback: true\n" +
+				"paths:\n" +
+				"  my_path:\n" +
+				"    recordPath: '%path/%s'\n",
+			`'recordPath' must contain %f`,
+		},
+		{
+			"invalid record delete after",
+			"paths:\n" +
+				"  my_path:\n" +
+				"    recordSegmentDuration: 30m\n" +
+				"    recordDeleteAfter: 20m\n",
+			`'recordDeleteAfter' cannot be lower than 'recordSegmentDuration'`,
 		},
 	} {
 		t.Run(ca.name, func(t *testing.T) {

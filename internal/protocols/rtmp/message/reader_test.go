@@ -8,7 +8,7 @@ import (
 	"github.com/abema/go-mp4"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4audio"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/bluenviron/mediamtx/internal/protocols/rtmp/amf0"
 	"github.com/bluenviron/mediamtx/internal/protocols/rtmp/bytecounter"
 )
@@ -650,7 +650,7 @@ func FuzzReader(f *testing.F) {
 		f.Add(ca.enc)
 	}
 
-	f.Fuzz(func(_ *testing.T, b []byte) {
+	f.Fuzz(func(t *testing.T, b []byte) {
 		bcr := bytecounter.NewReader(bytes.NewReader(b))
 		r := NewReader(bcr, bcr, nil)
 
@@ -659,8 +659,11 @@ func FuzzReader(f *testing.F) {
 		w := NewWriter(bcw, bcw, true)
 
 		msg, err := r.Read()
-		if err == nil {
-			w.Write(msg) //nolint:errcheck
+		if err != nil {
+			return
 		}
+
+		err = w.Write(msg)
+		require.NoError(t, err)
 	})
 }

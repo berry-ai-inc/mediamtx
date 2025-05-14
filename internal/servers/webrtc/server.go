@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	webrtcTurnSecretExpiration = 24 * 3600 * time.Second
+	webrtcTurnSecretExpiration = 24 * time.Hour
 )
 
 // ErrSessionNotFound is returned when a session is not found.
@@ -315,6 +315,9 @@ outer:
 				additionalHosts:       s.AdditionalHosts,
 				iceUDPMux:             s.iceUDPMux,
 				iceTCPMux:             s.iceTCPMux,
+				handshakeTimeout:      s.HandshakeTimeout,
+				trackGatherTimeout:    s.TrackGatherTimeout,
+				stunGatherTimeout:     s.STUNGatherTimeout,
 				req:                   req,
 				wg:                    &wg,
 				externalCmdPool:       s.ExternalCmdPool,

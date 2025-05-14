@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
-	"github.com/bluenviron/gortsplib/v4/pkg/auth"
-	"github.com/bluenviron/gortsplib/v4/pkg/headers"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -25,19 +23,19 @@ const (
 	// PauseAfterError is the pause to apply after an authentication failure.
 	PauseAfterError = 2 * time.Second
 
-	rtspAuthRealm    = "IPCAM"
 	jwtRefreshPeriod = 60 * 60 * time.Second
 )
 
 // Error is a authentication error.
 type Error struct {
+	Wrapped        error
 	Message        string
 	AskCredentials bool
 }
 
 // Error implements the error interface.
-func (e *Error) Error() string {
-	return "authentication failed: " + e.Message
+func (e Error) Error() string {
+	return "authentication failed: " + e.Wrapped.Error()
 }
 
 func matchesPermission(perms []conf.AuthInternalUserPermission, req *Request) bool {
@@ -68,47 +66,16 @@ func matchesPermission(perms []conf.AuthInternalUserPermission, req *Request) bo
 	return false
 }
 
-type customClaims struct {
-	jwt.RegisteredClaims
-	permissionsKey string
-	permissions    []conf.AuthInternalUserPermission
-}
-
-func (c *customClaims) UnmarshalJSON(b []byte) error {
-	err := json.Unmarshal(b, &c.RegisteredClaims)
-	if err != nil {
-		return err
-	}
-
-	var claimMap map[string]json.RawMessage
-	err = json.Unmarshal(b, &claimMap)
-	if err != nil {
-		return err
-	}
-
-	rawPermissions, ok := claimMap[c.permissionsKey]
-	if !ok {
-		return fmt.Errorf("claim '%s' not found inside JWT", c.permissionsKey)
-	}
-
-	err = json.Unmarshal(rawPermissions, &c.permissions)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // Manager is the authentication manager.
 type Manager struct {
-	Method          conf.AuthMethod
-	InternalUsers   []conf.AuthInternalUser
-	HTTPAddress     string
-	HTTPExclude     []conf.AuthInternalUserPermission
-	JWTJWKS         string
-	JWTClaimKey     string
-	ReadTimeout     time.Duration
-	RTSPAuthMethods []auth.ValidateMethod
+	Method        conf.AuthMethod
+	InternalUsers []conf.AuthInternalUser
+	HTTPAddress   string
+	HTTPExclude   []conf.AuthInternalUserPermission
+	JWTJWKS       string
+	JWTClaimKey   string
+	JWTExclude    []conf.AuthInternalUserPermission
+	ReadTimeout   time.Duration
 
 	mutex          sync.RWMutex
 	jwtHTTPClient  *http.Client
@@ -139,8 +106,8 @@ func (m *Manager) Authenticate(req *Request) error {
 	}
 
 	if err != nil {
-		return &Error{
-			Message:        err.Error(),
+		return Error{
+			Wrapped:        err,
 			AskCredentials: (req.User == "" && req.Pass == ""),
 		}
 	}
@@ -149,20 +116,11 @@ func (m *Manager) Authenticate(req *Request) error {
 }
 
 func (m *Manager) authenticateInternal(req *Request) error {
-	var rtspAuthHeader *headers.Authorization
-	if req.RTSPRequest != nil {
-		var tmp headers.Authorization
-		err := tmp.Unmarshal(req.RTSPRequest.Header["Authorization"])
-		if err == nil {
-			rtspAuthHeader = &tmp
-		}
-	}
-
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
 	for _, u := range m.InternalUsers {
-		if err := m.authenticateWithUser(req, rtspAuthHeader, &u); err == nil {
+		if ok := m.authenticateWithUser(req, &u); ok {
 			return nil
 		}
 	}
@@ -172,39 +130,29 @@ func (m *Manager) authenticateInternal(req *Request) error {
 
 func (m *Manager) authenticateWithUser(
 	req *Request,
-	rtspAuthHeader *headers.Authorization,
 	u *conf.AuthInternalUser,
-) error {
-	if u.User != "any" && !u.User.Check(req.User) {
-		return fmt.Errorf("wrong user")
-	}
-
+) bool {
 	if len(u.IPs) != 0 && !u.IPs.Contains(req.IP) {
-		return fmt.Errorf("IP not allowed")
+		return false
 	}
 
 	if !matchesPermission(u.Permissions, req) {
-		return fmt.Errorf("user doesn't have permission to perform action")
+		return false
 	}
 
 	if u.User != "any" {
-		if req.RTSPRequest != nil && rtspAuthHeader != nil && rtspAuthHeader.Method == headers.AuthMethodDigest {
-			err := auth.Validate(
-				req.RTSPRequest,
-				string(u.User),
-				string(u.Pass),
-				m.RTSPAuthMethods,
-				rtspAuthRealm,
-				req.RTSPNonce)
-			if err != nil {
-				return err
+		if req.CustomVerifyFunc != nil {
+			if ok := req.CustomVerifyFunc(string(u.User), string(u.Pass)); !ok {
+				return false
 			}
-		} else if !u.Pass.Check(req.Pass) {
-			return fmt.Errorf("invalid credentials")
+		} else {
+			if !u.User.Check(req.User) || !u.Pass.Check(req.Pass) {
+				return false
+			}
 		}
 	}
 
-	return nil
+	return true
 }
 
 func (m *Manager) authenticateHTTP(req *Request) error {
@@ -250,6 +198,10 @@ func (m *Manager) authenticateHTTP(req *Request) error {
 }
 
 func (m *Manager) authenticateJWT(req *Request) error {
+	if matchesPermission(m.JWTExclude, req) {
+		return nil
+	}
+
 	keyfunc, err := m.pullJWTJWKS()
 	if err != nil {
 		return err
@@ -264,7 +216,7 @@ func (m *Manager) authenticateJWT(req *Request) error {
 		return fmt.Errorf("JWT not provided")
 	}
 
-	var cc customClaims
+	var cc jwtClaims
 	cc.permissionsKey = m.JWTClaimKey
 	_, err = jwt.ParseWithClaims(v["jwt"][0], &cc, keyfunc)
 	if err != nil {

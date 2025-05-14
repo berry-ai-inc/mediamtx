@@ -9,9 +9,9 @@ import (
 
 	"github.com/bluenviron/gortsplib/v4/pkg/description"
 	rtspformat "github.com/bluenviron/gortsplib/v4/pkg/format"
-	"github.com/bluenviron/mediacommon/pkg/codecs/h265"
-	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4audio"
-	"github.com/bluenviron/mediacommon/pkg/formats/fmp4"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h265"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
+	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
 	"github.com/stretchr/testify/require"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
@@ -125,15 +125,16 @@ func TestRecorder(t *testing.T) {
 	for _, recAudio := range []bool{false, true} {
 		for _, ca := range []string{"fmp4", "mpegts"} {
 			t.Run(ca, func(t *testing.T) {
-				stream, err := stream.New(
-					512,
-					1460,
-					desc,
-					true,
-					test.NilLogger,
-				)
+				strm := &stream.Stream{
+					WriteQueueSize:     512,
+					UDPMaxPayloadSize:  1472,
+					Desc:               desc,
+					GenerateRTPPackets: true,
+					Parent:             test.NilLogger,
+				}
+				err := strm.Initialize()
 				require.NoError(t, err)
-				defer stream.Close()
+				defer strm.Close()
 
 				dir, err := os.MkdirTemp("", "mediamtx-agent")
 				require.NoError(t, err)
@@ -166,7 +167,7 @@ func TestRecorder(t *testing.T) {
 					PartDuration:    100 * time.Millisecond,
 					SegmentDuration: 1 * time.Second,
 					PathName:        "mypath",
-					Stream:          stream,
+					Stream:          strm,
 					OnSegmentCreate: func(segPath string) {
 						switch n {
 						case 0:
@@ -201,16 +202,16 @@ func TestRecorder(t *testing.T) {
 				}
 				w.Initialize()
 
-				writeToStream(stream,
+				writeToStream(strm,
 					50*90000,
 					time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC))
 
-				writeToStream(stream,
+				writeToStream(strm,
 					52*90000,
 					time.Date(2008, 5, 20, 22, 16, 25, 0, time.UTC))
 
 				// simulate a write error
-				stream.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
+				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
 					Base: unit.Base{
 						PTS: 0,
 					},
@@ -303,7 +304,7 @@ func TestRecorder(t *testing.T) {
 
 				time.Sleep(50 * time.Millisecond)
 
-				writeToStream(stream,
+				writeToStream(strm,
 					300*90000,
 					time.Date(2010, 5, 20, 22, 15, 25, 0, time.UTC))
 
@@ -387,15 +388,16 @@ func TestRecorderFMP4NegativeDTS(t *testing.T) {
 		},
 	}}
 
-	stream, err := stream.New(
-		512,
-		1460,
-		desc,
-		true,
-		test.NilLogger,
-	)
+	strm := &stream.Stream{
+		WriteQueueSize:     512,
+		UDPMaxPayloadSize:  1472,
+		Desc:               desc,
+		GenerateRTPPackets: true,
+		Parent:             test.NilLogger,
+	}
+	err := strm.Initialize()
 	require.NoError(t, err)
-	defer stream.Close()
+	defer strm.Close()
 
 	dir, err := os.MkdirTemp("", "mediamtx-agent")
 	require.NoError(t, err)
@@ -409,14 +411,14 @@ func TestRecorderFMP4NegativeDTS(t *testing.T) {
 		PartDuration:    100 * time.Millisecond,
 		SegmentDuration: 1 * time.Second,
 		PathName:        "mypath",
-		Stream:          stream,
+		Stream:          strm,
 		Parent:          test.NilLogger,
 		RecordAudio:     true,
 	}
 	w.Initialize()
 
 	for i := 0; i < 3; i++ {
-		stream.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
+		strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
 			Base: unit.Base{
 				PTS: -50*90000/1000 + (int64(i) * 200 * 90000 / 1000),
 				NTP: time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC),
@@ -428,7 +430,7 @@ func TestRecorderFMP4NegativeDTS(t *testing.T) {
 			},
 		})
 
-		stream.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.MPEG4Audio{
+		strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.MPEG4Audio{
 			Base: unit.Base{
 				PTS: -100*44100/1000 + (int64(i) * 200 * 44100 / 1000),
 			},
@@ -475,15 +477,16 @@ func TestRecorderSkipTracksPartial(t *testing.T) {
 				},
 			}}
 
-			stream, err := stream.New(
-				512,
-				1460,
-				desc,
-				true,
-				test.NilLogger,
-			)
+			strm := &stream.Stream{
+				WriteQueueSize:     512,
+				UDPMaxPayloadSize:  1472,
+				Desc:               desc,
+				GenerateRTPPackets: true,
+				Parent:             test.NilLogger,
+			}
+			err := strm.Initialize()
 			require.NoError(t, err)
-			defer stream.Close()
+			defer strm.Close()
 
 			dir, err := os.MkdirTemp("", "mediamtx-agent")
 			require.NoError(t, err)
@@ -514,8 +517,9 @@ func TestRecorderSkipTracksPartial(t *testing.T) {
 				PartDuration:    100 * time.Millisecond,
 				SegmentDuration: 1 * time.Second,
 				PathName:        "mypath",
-				Stream:          stream,
+				Stream:          strm,
 				Parent:          l,
+				RecordAudio:     true,
 			}
 			w.Initialize()
 			defer w.Close()
@@ -535,15 +539,16 @@ func TestRecorderSkipTracksFull(t *testing.T) {
 				},
 			}}
 
-			stream, err := stream.New(
-				512,
-				1460,
-				desc,
-				true,
-				test.NilLogger,
-			)
+			strm := &stream.Stream{
+				WriteQueueSize:     512,
+				UDPMaxPayloadSize:  1472,
+				Desc:               desc,
+				GenerateRTPPackets: true,
+				Parent:             test.NilLogger,
+			}
+			err := strm.Initialize()
 			require.NoError(t, err)
-			defer stream.Close()
+			defer strm.Close()
 
 			dir, err := os.MkdirTemp("", "mediamtx-agent")
 			require.NoError(t, err)
@@ -574,8 +579,9 @@ func TestRecorderSkipTracksFull(t *testing.T) {
 				PartDuration:    100 * time.Millisecond,
 				SegmentDuration: 1 * time.Second,
 				PathName:        "mypath",
-				Stream:          stream,
+				Stream:          strm,
 				Parent:          l,
+				RecordAudio:     true,
 			}
 			w.Initialize()
 			defer w.Close()
