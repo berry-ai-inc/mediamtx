@@ -16,7 +16,7 @@ import (
 )
 
 var errNoSupportedCodecsFrom = errors.New(
-	"the strm doesn't contain any supported codec, which are currently H264, MPEG-4 Audio, MPEG-1/2 Audio")
+	"the stream doesn't contain any supported codec, which are currently H264, MPEG-4 Audio, MPEG-1/2 Audio")
 
 func multiplyAndDivide2(v, m, d time.Duration) time.Duration {
 	secs := v / d
@@ -157,7 +157,7 @@ func setupAudio(
 						return err
 					}
 
-					if !(!h.MPEG2 && h.Layer == 3) {
+					if h.MPEG2 || h.Layer != 3 {
 						return fmt.Errorf("RTMP only supports MPEG-1 layer 3 audio")
 					}
 
@@ -183,11 +183,11 @@ func setupAudio(
 	return nil
 }
 
-// FromStream maps a MediaMTX strm to a RTMP strm.
+// FromStream maps a MediaMTX stream to a RTMP stream.
 func FromStream(
 	str *stream.Stream,
 	reader stream.Reader,
-	conn *Conn,
+	conn Conn,
 	nconn net.Conn,
 	writeTimeout time.Duration,
 ) error {
@@ -213,8 +213,12 @@ func FromStream(
 		return errNoSupportedCodecsFrom
 	}
 
-	var err error
-	w, err = NewWriter(conn, videoFormat, audioFormat)
+	w = &Writer{
+		Conn:       conn,
+		VideoTrack: videoFormat,
+		AudioTrack: audioFormat,
+	}
+	err := w.Initialize()
 	if err != nil {
 		return err
 	}

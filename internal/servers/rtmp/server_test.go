@@ -1,8 +1,8 @@
 package rtmp
 
 import (
+	"context"
 	"crypto/tls"
-	"net"
 	"net/url"
 	"os"
 	"testing"
@@ -91,8 +91,8 @@ func TestServerPublish(t *testing.T) {
 				AddPublisherImpl: func(req defs.PathAddPublisherReq) (defs.Path, error) {
 					require.Equal(t, "teststream", req.AccessRequest.Name)
 					require.Equal(t, "user=myuser&pass=mypass&param=value", req.AccessRequest.Query)
-					require.Equal(t, "myuser", req.AccessRequest.User)
-					require.Equal(t, "mypass", req.AccessRequest.Pass)
+					require.Equal(t, "myuser", req.AccessRequest.Credentials.User)
+					require.Equal(t, "mypass", req.AccessRequest.Credentials.Pass)
 					return path, nil
 				},
 			}
@@ -116,22 +116,34 @@ func TestServerPublish(t *testing.T) {
 			require.NoError(t, err)
 			defer s.Close()
 
-			u, err := url.Parse("rtmp://127.0.0.1:1935/teststream?user=myuser&pass=mypass&param=value")
+			var rawURL string
+
+			if encrypt == "tls" {
+				rawURL += "rtmps://"
+			} else {
+				rawURL += "rtmp://"
+			}
+
+			rawURL += "127.0.0.1:1935/teststream?user=myuser&pass=mypass&param=value"
+
+			u, err := url.Parse(rawURL)
 			require.NoError(t, err)
 
-			nconn, err := func() (net.Conn, error) {
-				if encrypt == "plain" {
-					return net.Dial("tcp", u.Host)
-				}
-				return tls.Dial("tcp", u.Host, &tls.Config{InsecureSkipVerify: true})
-			}()
+			conn := &rtmp.Client{
+				URL:       u,
+				TLSConfig: &tls.Config{InsecureSkipVerify: true},
+				Publish:   true,
+			}
+			err = conn.Initialize(context.Background())
 			require.NoError(t, err)
-			defer nconn.Close()
+			defer conn.Close()
 
-			conn, err := rtmp.NewClientConn(nconn, u, true)
-			require.NoError(t, err)
-
-			w, err := rtmp.NewWriter(conn, test.FormatH264, test.FormatMPEG4Audio)
+			w := &rtmp.Writer{
+				Conn:       conn,
+				VideoTrack: test.FormatH264,
+				AudioTrack: test.FormatMPEG4Audio,
+			}
+			err = w.Initialize()
 			require.NoError(t, err)
 
 			err = w.WriteH264(
@@ -211,8 +223,8 @@ func TestServerRead(t *testing.T) {
 				AddReaderImpl: func(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error) {
 					require.Equal(t, "teststream", req.AccessRequest.Name)
 					require.Equal(t, "user=myuser&pass=mypass&param=value", req.AccessRequest.Query)
-					require.Equal(t, "myuser", req.AccessRequest.User)
-					require.Equal(t, "mypass", req.AccessRequest.Pass)
+					require.Equal(t, "myuser", req.AccessRequest.Credentials.User)
+					require.Equal(t, "mypass", req.AccessRequest.Credentials.Pass)
 					return path, path.stream, nil
 				},
 			}
@@ -236,17 +248,27 @@ func TestServerRead(t *testing.T) {
 			require.NoError(t, err)
 			defer s.Close()
 
-			u, err := url.Parse("rtmp://127.0.0.1:1935/teststream?user=myuser&pass=mypass&param=value")
+			var rawURL string
+
+			if encrypt == "tls" {
+				rawURL += "rtmps://"
+			} else {
+				rawURL += "rtmp://"
+			}
+
+			rawURL += "127.0.0.1:1935/teststream?user=myuser&pass=mypass&param=value"
+
+			u, err := url.Parse(rawURL)
 			require.NoError(t, err)
 
-			nconn, err := func() (net.Conn, error) {
-				if encrypt == "plain" {
-					return net.Dial("tcp", u.Host)
-				}
-				return tls.Dial("tcp", u.Host, &tls.Config{InsecureSkipVerify: true})
-			}()
+			conn := &rtmp.Client{
+				URL:       u,
+				TLSConfig: &tls.Config{InsecureSkipVerify: true},
+				Publish:   false,
+			}
+			err = conn.Initialize(context.Background())
 			require.NoError(t, err)
-			defer nconn.Close()
+			defer conn.Close()
 
 			go func() {
 				strm.WaitRunningReader()
@@ -281,10 +303,10 @@ func TestServerRead(t *testing.T) {
 				})
 			}()
 
-			conn, err := rtmp.NewClientConn(nconn, u, false)
-			require.NoError(t, err)
-
-			r, err := rtmp.NewReader(conn)
+			r := &rtmp.Reader{
+				Conn: conn,
+			}
+			err = r.Initialize()
 			require.NoError(t, err)
 
 			tracks := r.Tracks()
