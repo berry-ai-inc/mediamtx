@@ -20,6 +20,7 @@ type Recorder struct {
 	PathFormat        string
 	Format            conf.RecordFormat
 	PartDuration      time.Duration
+	MaxPartSize       conf.StringSize
 	SegmentDuration   time.Duration
 	PathName          string
 	Stream            *stream.Stream
@@ -27,6 +28,7 @@ type Recorder struct {
 	OnSegmentComplete OnSegmentCompleteFunc
 	Parent            logger.Writer
 
+	// berry's
 	RecordAudio        bool
 	RecordTimestampCSV bool
 
@@ -56,15 +58,17 @@ func (r *Recorder) Initialize() {
 	r.done = make(chan struct{})
 
 	r.currentInstance = &recorderInstance{
-		pathFormat:         r.PathFormat,
-		format:             r.Format,
-		partDuration:       r.PartDuration,
-		segmentDuration:    r.SegmentDuration,
-		pathName:           r.PathName,
-		stream:             r.Stream,
-		onSegmentCreate:    r.OnSegmentCreate,
-		onSegmentComplete:  r.OnSegmentComplete,
-		parent:             r,
+		pathFormat:        r.PathFormat,
+		format:            r.Format,
+		partDuration:      r.PartDuration,
+		maxPartSize:       r.MaxPartSize,
+		segmentDuration:   r.SegmentDuration,
+		pathName:          r.PathName,
+		stream:            r.Stream,
+		onSegmentCreate:   r.OnSegmentCreate,
+		onSegmentComplete: r.OnSegmentComplete,
+		parent:            r,
+		// berry's
 		recordTimestampCSV: r.RecordTimestampCSV,
 		recordAudio:        r.RecordAudio,
 	}
@@ -74,7 +78,7 @@ func (r *Recorder) Initialize() {
 }
 
 // Log implements logger.Writer.
-func (r *Recorder) Log(level logger.Level, format string, args ...interface{}) {
+func (r *Recorder) Log(level logger.Level, format string, args ...any) {
 	r.Parent.Log(level, "[recorder] "+format, args...)
 }
 
@@ -104,15 +108,17 @@ func (r *Recorder) run() {
 		}
 
 		r.currentInstance = &recorderInstance{
-			pathFormat:         r.PathFormat,
-			format:             r.Format,
-			partDuration:       r.PartDuration,
-			segmentDuration:    r.SegmentDuration,
-			pathName:           r.PathName,
-			stream:             r.Stream,
-			onSegmentCreate:    r.OnSegmentCreate,
-			onSegmentComplete:  r.OnSegmentComplete,
-			parent:             r,
+			pathFormat:        r.PathFormat,
+			format:            r.Format,
+			partDuration:      r.PartDuration,
+			maxPartSize:       r.MaxPartSize,
+			segmentDuration:   r.SegmentDuration,
+			pathName:          r.PathName,
+			stream:            r.Stream,
+			onSegmentCreate:   r.OnSegmentCreate,
+			onSegmentComplete: r.OnSegmentComplete,
+			parent:            r,
+			// berry's
 			recordTimestampCSV: r.RecordTimestampCSV,
 			recordAudio:        r.RecordAudio,
 		}

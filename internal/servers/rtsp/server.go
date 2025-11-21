@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4"
-	"github.com/bluenviron/gortsplib/v4/pkg/auth"
-	"github.com/bluenviron/gortsplib/v4/pkg/base"
-	"github.com/bluenviron/gortsplib/v4/pkg/liberrors"
+	"github.com/bluenviron/gortsplib/v5"
+	"github.com/bluenviron/gortsplib/v5/pkg/auth"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/liberrors"
 	"github.com/google/uuid"
 
 	"github.com/bluenviron/mediamtx/internal/certloader"
@@ -32,7 +32,7 @@ var ErrConnNotFound = errors.New("connection not found")
 // ErrSessionNotFound is returned when a session is not found.
 var ErrSessionNotFound = errors.New("session not found")
 
-func interfaceIsEmpty(i interface{}) bool {
+func interfaceIsEmpty(i any) bool {
 	return reflect.ValueOf(i).Kind() != reflect.Ptr || reflect.ValueOf(i).IsNil()
 }
 
@@ -58,8 +58,9 @@ type serverMetrics interface {
 }
 
 type serverPathManager interface {
+	FindPathConf(req defs.PathFindPathConfReq) (*conf.Path, error)
 	Describe(req defs.PathDescribeReq) defs.PathDescribeRes
-	AddPublisher(_ defs.PathAddPublisherReq) (defs.Path, error)
+	AddPublisher(_ defs.PathAddPublisherReq) (defs.Path, *stream.Stream, error)
 	AddReader(_ defs.PathAddReaderReq) (defs.Path, *stream.Stream, error)
 }
 
@@ -71,6 +72,7 @@ type serverParent interface {
 type Server struct {
 	Address             string
 	AuthMethods         []auth.VerifyMethod
+	UDPReadBufferSize   uint
 	ReadTimeout         conf.Duration
 	WriteTimeout        conf.Duration
 	WriteQueueSize      int
@@ -112,12 +114,13 @@ func (s *Server) Initialize() error {
 	s.sessions = make(map[*gortsplib.ServerSession]*session)
 
 	s.srv = &gortsplib.Server{
-		Handler:        s,
-		ReadTimeout:    time.Duration(s.ReadTimeout),
-		WriteTimeout:   time.Duration(s.WriteTimeout),
-		WriteQueueSize: s.WriteQueueSize,
-		RTSPAddress:    s.Address,
-		AuthMethods:    s.AuthMethods,
+		Handler:           s,
+		ReadTimeout:       time.Duration(s.ReadTimeout),
+		WriteTimeout:      time.Duration(s.WriteTimeout),
+		UDPReadBufferSize: int(s.UDPReadBufferSize),
+		WriteQueueSize:    s.WriteQueueSize,
+		RTSPAddress:       s.Address,
+		AuthMethods:       s.AuthMethods,
 	}
 
 	if s.UseUDP {
@@ -167,14 +170,14 @@ func (s *Server) Initialize() error {
 }
 
 // Log implements logger.Writer.
-func (s *Server) Log(level logger.Level, format string, args ...interface{}) {
+func (s *Server) Log(level logger.Level, format string, args ...any) {
 	label := func() string {
 		if s.IsTLS {
 			return "RTSPS"
 		}
 		return "RTSP"
 	}()
-	s.Parent.Log(level, "[%s] "+format, append([]interface{}{label}, args...)...)
+	s.Parent.Log(level, "[%s] "+format, append([]any{label}, args...)...)
 }
 
 // Close closes the server.

@@ -11,12 +11,11 @@ import (
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
-	"github.com/bluenviron/mediamtx/internal/restrictnetwork"
 	"github.com/gin-gonic/gin"
 )
 
 type serverAuthManager interface {
-	Authenticate(req *auth.Request) error
+	Authenticate(req *auth.Request) *auth.Error
 }
 
 // Server is the playback server.
@@ -25,9 +24,10 @@ type Server struct {
 	Encryption     bool
 	ServerKey      string
 	ServerCert     string
-	AllowOrigin    string
+	AllowOrigins   []string
 	TrustedProxies conf.IPNetworks
 	ReadTimeout    conf.Duration
+	WriteTimeout   conf.Duration
 	PathConfs      map[string]*conf.Path
 	AuthManager    serverAuthManager
 	Parent         logger.Writer
@@ -41,29 +41,28 @@ func (s *Server) Initialize() error {
 	router := gin.New()
 	router.SetTrustedProxies(s.TrustedProxies.ToTrustedProxies()) //nolint:errcheck
 
-	router.Use(s.middlewareOrigin)
+	router.Use(s.middlewarePreflightRequests)
 
 	router.GET("/list", s.onList)
 	router.GET("/get", s.onGet)
 
-	network, address := restrictnetwork.Restrict("tcp", s.Address)
-
 	s.httpServer = &httpp.Server{
-		Network:     network,
-		Address:     address,
-		ReadTimeout: time.Duration(s.ReadTimeout),
-		Encryption:  s.Encryption,
-		ServerCert:  s.ServerCert,
-		ServerKey:   s.ServerKey,
-		Handler:     router,
-		Parent:      s,
+		Address:      s.Address,
+		AllowOrigins: s.AllowOrigins,
+		ReadTimeout:  time.Duration(s.ReadTimeout),
+		WriteTimeout: time.Duration(s.WriteTimeout),
+		Encryption:   s.Encryption,
+		ServerCert:   s.ServerCert,
+		ServerKey:    s.ServerKey,
+		Handler:      router,
+		Parent:       s,
 	}
 	err := s.httpServer.Initialize()
 	if err != nil {
 		return err
 	}
 
-	s.Log(logger.Info, "listener opened on "+address)
+	s.Log(logger.Info, "listener opened on "+s.Address)
 
 	return nil
 }
@@ -75,7 +74,7 @@ func (s *Server) Close() {
 }
 
 // Log implements logger.Writer.
-func (s *Server) Log(level logger.Level, format string, args ...interface{}) {
+func (s *Server) Log(level logger.Level, format string, args ...any) {
 	s.Parent.Log(level, "[playback] "+format, args...)
 }
 
@@ -102,11 +101,7 @@ func (s *Server) safeFindPathConf(name string) (*conf.Path, error) {
 	return pathConf, err
 }
 
-func (s *Server) middlewareOrigin(ctx *gin.Context) {
-	ctx.Header("Access-Control-Allow-Origin", s.AllowOrigin)
-	ctx.Header("Access-Control-Allow-Credentials", "true")
-
-	// preflight requests
+func (s *Server) middlewarePreflightRequests(ctx *gin.Context) {
 	if ctx.Request.Method == http.MethodOptions &&
 		ctx.Request.Header.Get("Access-Control-Request-Method") != "" {
 		ctx.Header("Access-Control-Allow-Methods", "OPTIONS, GET")
@@ -127,16 +122,16 @@ func (s *Server) doAuth(ctx *gin.Context, pathName string) bool {
 
 	err := s.AuthManager.Authenticate(req)
 	if err != nil {
-		if err.(auth.Error).AskCredentials { //nolint:errorlint
+		if err.AskCredentials {
 			ctx.Header("WWW-Authenticate", `Basic realm="mediamtx"`)
 			ctx.Writer.WriteHeader(http.StatusUnauthorized)
 			return false
 		}
 
 		s.Log(logger.Info, "connection %v failed to authenticate: %v",
-			httpp.RemoteAddr(ctx), err.(*auth.Error).Message) //nolint:errorlint
+			httpp.RemoteAddr(ctx), err.Wrapped)
 
-		// wait some seconds to mitigate brute force attacks
+		// wait some seconds to delay brute force attacks
 		<-time.After(auth.PauseAfterError)
 
 		ctx.Writer.WriteHeader(http.StatusUnauthorized)

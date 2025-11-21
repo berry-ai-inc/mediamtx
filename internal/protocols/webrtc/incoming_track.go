@@ -3,8 +3,7 @@ package webrtc
 import (
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/rtcpreceiver"
-	"github.com/bluenviron/gortsplib/v4/pkg/rtpreorderer"
+	"github.com/bluenviron/gortsplib/v5/pkg/rtpreceiver"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -237,20 +236,19 @@ var incomingAudioCodecs = []webrtc.RTPCodecParameters{
 
 // IncomingTrack is an incoming track.
 type IncomingTrack struct {
-	OnPacketRTP func(*rtp.Packet, time.Time)
+	OnPacketRTP func(*rtp.Packet)
 
-	useAbsoluteTimestamp bool
-	track                *webrtc.TrackRemote
-	receiver             *webrtc.RTPReceiver
-	writeRTCP            func([]rtcp.Packet) error
-	log                  logger.Writer
+	track     *webrtc.TrackRemote
+	receiver  *webrtc.RTPReceiver
+	writeRTCP func([]rtcp.Packet) error
+	log       logger.Writer
 
-	packetsLost  *counterdumper.CounterDumper
-	rtcpReceiver *rtcpreceiver.RTCPReceiver
+	packetsLost *counterdumper.CounterDumper
+	rtpReceiver *rtpreceiver.Receiver
 }
 
 func (t *IncomingTrack) initialize() {
-	t.OnPacketRTP = func(*rtp.Packet, time.Time) {}
+	t.OnPacketRTP = func(*rtp.Packet) {}
 }
 
 // Codec returns the track codec.
@@ -283,35 +281,37 @@ func (t *IncomingTrack) start() {
 	}
 	t.packetsLost.Start()
 
-	t.rtcpReceiver = &rtcpreceiver.RTCPReceiver{
-		ClockRate: int(t.track.SSRC()),
-		Period:    1 * time.Second,
+	t.rtpReceiver = &rtpreceiver.Receiver{
+		ClockRate:            int(t.track.Codec().ClockRate),
+		UnrealiableTransport: true,
+		Period:               1 * time.Second,
 		WritePacketRTCP: func(p rtcp.Packet) {
 			t.writeRTCP([]rtcp.Packet{p}) //nolint:errcheck
 		},
 	}
-	err := t.rtcpReceiver.Initialize()
+	err := t.rtpReceiver.Initialize()
 	if err != nil {
 		panic(err)
 	}
 
-	// incoming RTCP packets must always be read to make interceptors work
+	// read incoming RTCP packets.
+	// incoming RTCP packets must always be read to make interceptors work.
 	go func() {
 		buf := make([]byte, 1500)
 		for {
-			n, _, err := t.receiver.Read(buf)
-			if err != nil {
+			n, _, err2 := t.receiver.Read(buf)
+			if err2 != nil {
 				return
 			}
 
-			pkts, err := rtcp.Unmarshal(buf[:n])
-			if err != nil {
-				panic(err)
+			pkts, err2 := rtcp.Unmarshal(buf[:n])
+			if err2 != nil {
+				panic(err2)
 			}
 
 			for _, pkt := range pkts {
 				if sr, ok := pkt.(*rtcp.SenderReport); ok {
-					t.rtcpReceiver.ProcessSenderReport(sr, time.Now())
+					t.rtpReceiver.ProcessSenderReport(sr, time.Now())
 				}
 			}
 		}
@@ -324,51 +324,31 @@ func (t *IncomingTrack) start() {
 			defer keyframeTicker.Stop()
 
 			for range keyframeTicker.C {
-				err := t.writeRTCP([]rtcp.Packet{
+				err2 := t.writeRTCP([]rtcp.Packet{
 					&rtcp.PictureLossIndication{
 						MediaSSRC: uint32(t.track.SSRC()),
 					},
 				})
-				if err != nil {
+				if err2 != nil {
 					return
 				}
 			}
 		}()
 	}
 
-	// read incoming RTP packets
+	// read incoming RTP packets.
 	go func() {
-		reorderer := &rtpreorderer.Reorderer{}
-		reorderer.Initialize()
-
 		for {
-			pkt, _, err := t.track.ReadRTP()
-			if err != nil {
+			pkt, _, err2 := t.track.ReadRTP()
+			if err2 != nil {
 				return
 			}
 
-			packets, lost := reorderer.Process(pkt)
+			packets, lost := t.rtpReceiver.ProcessPacket2(pkt, time.Now(), true)
+
 			if lost != 0 {
-				t.packetsLost.Add(uint64(lost))
+				t.packetsLost.Add(lost)
 				// do not return
-			}
-
-			err = t.rtcpReceiver.ProcessPacket(pkt, time.Now(), true)
-			if err != nil {
-				t.log.Log(logger.Warn, err.Error())
-				continue
-			}
-
-			var ntp time.Time
-			if t.useAbsoluteTimestamp {
-				var avail bool
-				ntp, avail = t.rtcpReceiver.PacketNTP(pkt.Timestamp)
-				if !avail {
-					t.log.Log(logger.Warn, "received RTP packet without absolute time, skipping it")
-					continue
-				}
-			} else {
-				ntp = time.Now()
 			}
 
 			for _, pkt := range packets {
@@ -377,17 +357,22 @@ func (t *IncomingTrack) start() {
 					continue
 				}
 
-				t.OnPacketRTP(pkt, ntp)
+				t.OnPacketRTP(pkt)
 			}
 		}
 	}()
+}
+
+// PacketNTP returns the packet NTP.
+func (t *IncomingTrack) PacketNTP(pkt *rtp.Packet) (time.Time, bool) {
+	return t.rtpReceiver.PacketNTP(pkt.Timestamp)
 }
 
 func (t *IncomingTrack) close() {
 	if t.packetsLost != nil {
 		t.packetsLost.Stop()
 	}
-	if t.rtcpReceiver != nil {
-		t.rtcpReceiver.Close()
+	if t.rtpReceiver != nil {
+		t.rtpReceiver.Close()
 	}
 }

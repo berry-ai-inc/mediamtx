@@ -16,7 +16,6 @@ import (
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
-	"github.com/bluenviron/mediamtx/internal/restrictnetwork"
 )
 
 //go:generate go run ./hlsjsdownloader
@@ -40,9 +39,10 @@ type httpServer struct {
 	encryption     bool
 	serverKey      string
 	serverCert     string
-	allowOrigin    string
+	allowOrigins   []string
 	trustedProxies conf.IPNetworks
 	readTimeout    conf.Duration
+	writeTimeout   conf.Duration
 	pathManager    serverPathManager
 	parent         *Server
 
@@ -53,21 +53,20 @@ func (s *httpServer) initialize() error {
 	router := gin.New()
 	router.SetTrustedProxies(s.trustedProxies.ToTrustedProxies()) //nolint:errcheck
 
-	router.Use(s.middlewareOrigin)
+	router.Use(s.middlewarePreflightRequests)
 
 	router.Use(s.onRequest)
 
-	network, address := restrictnetwork.Restrict("tcp", s.address)
-
 	s.inner = &httpp.Server{
-		Network:     network,
-		Address:     address,
-		ReadTimeout: time.Duration(s.readTimeout),
-		Encryption:  s.encryption,
-		ServerCert:  s.serverCert,
-		ServerKey:   s.serverKey,
-		Handler:     router,
-		Parent:      s,
+		Address:      s.address,
+		AllowOrigins: s.allowOrigins,
+		ReadTimeout:  time.Duration(s.readTimeout),
+		WriteTimeout: time.Duration(s.writeTimeout),
+		Encryption:   s.encryption,
+		ServerCert:   s.serverCert,
+		ServerKey:    s.serverKey,
+		Handler:      router,
+		Parent:       s,
 	}
 	err := s.inner.Initialize()
 	if err != nil {
@@ -78,7 +77,7 @@ func (s *httpServer) initialize() error {
 }
 
 // Log implements logger.Writer.
-func (s *httpServer) Log(level logger.Level, format string, args ...interface{}) {
+func (s *httpServer) Log(level logger.Level, format string, args ...any) {
 	s.parent.Log(level, format, args...)
 }
 
@@ -86,11 +85,7 @@ func (s *httpServer) close() {
 	s.inner.Close()
 }
 
-func (s *httpServer) middlewareOrigin(ctx *gin.Context) {
-	ctx.Header("Access-Control-Allow-Origin", s.allowOrigin)
-	ctx.Header("Access-Control-Allow-Credentials", "true")
-
-	// preflight requests
+func (s *httpServer) middlewarePreflightRequests(ctx *gin.Context) {
 	if ctx.Request.Method == http.MethodOptions &&
 		ctx.Request.Header.Get("Access-Control-Request-Method") != "" {
 		ctx.Header("Access-Control-Allow-Methods", "OPTIONS, GET")
@@ -147,20 +142,18 @@ func (s *httpServer) onRequest(ctx *gin.Context) {
 		return
 	}
 
-	req := defs.PathAccessRequest{
-		Name:        dir,
-		Query:       ctx.Request.URL.RawQuery,
-		Publish:     false,
-		Proto:       auth.ProtocolHLS,
-		Credentials: httpp.Credentials(ctx.Request),
-		IP:          net.ParseIP(ctx.ClientIP()),
-	}
-
 	pathConf, err := s.pathManager.FindPathConf(defs.PathFindPathConfReq{
-		AccessRequest: req,
+		AccessRequest: defs.PathAccessRequest{
+			Name:        dir,
+			Query:       ctx.Request.URL.RawQuery,
+			Publish:     false,
+			Proto:       auth.ProtocolHLS,
+			Credentials: httpp.Credentials(ctx.Request),
+			IP:          net.ParseIP(ctx.ClientIP()),
+		},
 	})
 	if err != nil {
-		var terr auth.Error
+		var terr *auth.Error
 		if errors.As(err, &terr) {
 			if terr.AskCredentials {
 				ctx.Header("WWW-Authenticate", `Basic realm="mediamtx"`)
@@ -168,9 +161,9 @@ func (s *httpServer) onRequest(ctx *gin.Context) {
 				return
 			}
 
-			s.Log(logger.Info, "connection %v failed to authenticate: %v", httpp.RemoteAddr(ctx), terr.Message)
+			s.Log(logger.Info, "connection %v failed to authenticate: %v", httpp.RemoteAddr(ctx), terr.Wrapped)
 
-			// wait some seconds to mitigate brute force attacks
+			// wait some seconds to delay brute force attacks
 			<-time.After(auth.PauseAfterError)
 
 			ctx.Writer.WriteHeader(http.StatusUnauthorized)
@@ -189,7 +182,8 @@ func (s *httpServer) onRequest(ctx *gin.Context) {
 		ctx.Writer.Write(hlsIndex)
 
 	default:
-		mux, err := s.parent.getMuxer(serverGetMuxerReq{
+		var mux *muxer
+		mux, err = s.parent.getMuxer(serverGetMuxerReq{
 			path:           dir,
 			remoteAddr:     httpp.RemoteAddr(ctx),
 			query:          ctx.Request.URL.RawQuery,

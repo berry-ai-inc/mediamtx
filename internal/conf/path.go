@@ -4,14 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	gourl "net/url"
+	"net/url"
 	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
 	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
@@ -128,9 +128,11 @@ type Path struct {
 	RecordPath            string       `json:"recordPath"`
 	RecordFormat          RecordFormat `json:"recordFormat"`
 	RecordPartDuration    Duration     `json:"recordPartDuration"`
+	RecordMaxPartSize     StringSize   `json:"recordMaxPartSize"`
 	RecordSegmentDuration Duration     `json:"recordSegmentDuration"`
 	RecordDeleteAfter     Duration     `json:"recordDeleteAfter"`
 
+	// berry's
 	RecordAudio        bool `json:"recordAudio"`
 	RecordTimestampCSV bool `json:"recordTimestampCSV"`
 
@@ -148,59 +150,72 @@ type Path struct {
 	SRTPublishPassphrase     string `json:"srtPublishPassphrase"`
 
 	// RTSP source
-	RTSPTransport       RTSPTransport  `json:"rtspTransport"`
-	RTSPAnyPort         bool           `json:"rtspAnyPort"`
-	SourceProtocol      *RTSPTransport `json:"sourceProtocol,omitempty"`      // deprecated
-	SourceAnyPortEnable *bool          `json:"sourceAnyPortEnable,omitempty"` // deprecated
-	RTSPRangeType       RTSPRangeType  `json:"rtspRangeType"`
-	RTSPRangeStart      string         `json:"rtspRangeStart"`
+	RTSPTransport         RTSPTransport  `json:"rtspTransport"`
+	RTSPAnyPort           bool           `json:"rtspAnyPort"`
+	SourceProtocol        *RTSPTransport `json:"sourceProtocol,omitempty"`      // deprecated
+	SourceAnyPortEnable   *bool          `json:"sourceAnyPortEnable,omitempty"` // deprecated
+	RTSPRangeType         RTSPRangeType  `json:"rtspRangeType"`
+	RTSPRangeStart        string         `json:"rtspRangeStart"`
+	RTSPUDPReadBufferSize *uint          `json:"rtspUDPReadBufferSize,omitempty"` // deprecated
+
+	// MPEG-TS source
+	MPEGTSUDPReadBufferSize *uint `json:"mpegtsUDPReadBufferSize,omitempty"` // deprecated
+
+	// RTP source
+	RTPSDP               string `json:"rtpSDP"`
+	RTPUDPReadBufferSize *uint  `json:"rtpUDPReadBufferSize,omitempty"` // deprecated
 
 	// Redirect source
 	SourceRedirect string `json:"sourceRedirect"`
 
 	// Raspberry Pi Camera source
-	RPICameraCamID                uint      `json:"rpiCameraCamID"`
-	RPICameraSecondary            bool      `json:"rpiCameraSecondary"`
-	RPICameraWidth                uint      `json:"rpiCameraWidth"`
-	RPICameraHeight               uint      `json:"rpiCameraHeight"`
-	RPICameraHFlip                bool      `json:"rpiCameraHFlip"`
-	RPICameraVFlip                bool      `json:"rpiCameraVFlip"`
-	RPICameraBrightness           float64   `json:"rpiCameraBrightness"`
-	RPICameraContrast             float64   `json:"rpiCameraContrast"`
-	RPICameraSaturation           float64   `json:"rpiCameraSaturation"`
-	RPICameraSharpness            float64   `json:"rpiCameraSharpness"`
-	RPICameraExposure             string    `json:"rpiCameraExposure"`
-	RPICameraAWB                  string    `json:"rpiCameraAWB"`
-	RPICameraAWBGains             []float64 `json:"rpiCameraAWBGains"`
-	RPICameraDenoise              string    `json:"rpiCameraDenoise"`
-	RPICameraShutter              uint      `json:"rpiCameraShutter"`
-	RPICameraMetering             string    `json:"rpiCameraMetering"`
-	RPICameraGain                 float64   `json:"rpiCameraGain"`
-	RPICameraEV                   float64   `json:"rpiCameraEV"`
-	RPICameraROI                  string    `json:"rpiCameraROI"`
-	RPICameraHDR                  bool      `json:"rpiCameraHDR"`
-	RPICameraTuningFile           string    `json:"rpiCameraTuningFile"`
-	RPICameraMode                 string    `json:"rpiCameraMode"`
-	RPICameraFPS                  float64   `json:"rpiCameraFPS"`
-	RPICameraAfMode               string    `json:"rpiCameraAfMode"`
-	RPICameraAfRange              string    `json:"rpiCameraAfRange"`
-	RPICameraAfSpeed              string    `json:"rpiCameraAfSpeed"`
-	RPICameraLensPosition         float64   `json:"rpiCameraLensPosition"`
-	RPICameraAfWindow             string    `json:"rpiCameraAfWindow"`
-	RPICameraFlickerPeriod        uint      `json:"rpiCameraFlickerPeriod"`
-	RPICameraTextOverlayEnable    bool      `json:"rpiCameraTextOverlayEnable"`
-	RPICameraTextOverlay          string    `json:"rpiCameraTextOverlay"`
-	RPICameraCodec                string    `json:"rpiCameraCodec"`
-	RPICameraIDRPeriod            uint      `json:"rpiCameraIDRPeriod"`
-	RPICameraBitrate              uint      `json:"rpiCameraBitrate"`
-	RPICameraProfile              string    `json:"rpiCameraProfile"`
-	RPICameraLevel                string    `json:"rpiCameraLevel"`
-	RPICameraJPEGQuality          uint      `json:"rpiCameraJPEGQuality"`
-	RPICameraPrimaryName          string    `json:"-"` // filled by Check()
-	RPICameraSecondaryWidth       uint      `json:"-"` // filled by Check()
-	RPICameraSecondaryHeight      uint      `json:"-"` // filled by Check()
-	RPICameraSecondaryFPS         float64   `json:"-"` // filled by Check()
-	RPICameraSecondaryJPEGQuality uint      `json:"-"` // filled by Check()
+	RPICameraCamID                 uint      `json:"rpiCameraCamID"`
+	RPICameraSecondary             bool      `json:"rpiCameraSecondary"`
+	RPICameraWidth                 uint      `json:"rpiCameraWidth"`
+	RPICameraHeight                uint      `json:"rpiCameraHeight"`
+	RPICameraHFlip                 bool      `json:"rpiCameraHFlip"`
+	RPICameraVFlip                 bool      `json:"rpiCameraVFlip"`
+	RPICameraBrightness            float64   `json:"rpiCameraBrightness"`
+	RPICameraContrast              float64   `json:"rpiCameraContrast"`
+	RPICameraSaturation            float64   `json:"rpiCameraSaturation"`
+	RPICameraSharpness             float64   `json:"rpiCameraSharpness"`
+	RPICameraExposure              string    `json:"rpiCameraExposure"`
+	RPICameraAWB                   string    `json:"rpiCameraAWB"`
+	RPICameraAWBGains              []float64 `json:"rpiCameraAWBGains"`
+	RPICameraDenoise               string    `json:"rpiCameraDenoise"`
+	RPICameraShutter               uint      `json:"rpiCameraShutter"`
+	RPICameraMetering              string    `json:"rpiCameraMetering"`
+	RPICameraGain                  float64   `json:"rpiCameraGain"`
+	RPICameraEV                    float64   `json:"rpiCameraEV"`
+	RPICameraROI                   string    `json:"rpiCameraROI"`
+	RPICameraHDR                   bool      `json:"rpiCameraHDR"`
+	RPICameraTuningFile            string    `json:"rpiCameraTuningFile"`
+	RPICameraMode                  string    `json:"rpiCameraMode"`
+	RPICameraFPS                   float64   `json:"rpiCameraFPS"`
+	RPICameraAfMode                string    `json:"rpiCameraAfMode"`
+	RPICameraAfRange               string    `json:"rpiCameraAfRange"`
+	RPICameraAfSpeed               string    `json:"rpiCameraAfSpeed"`
+	RPICameraLensPosition          float64   `json:"rpiCameraLensPosition"`
+	RPICameraAfWindow              string    `json:"rpiCameraAfWindow"`
+	RPICameraFlickerPeriod         uint      `json:"rpiCameraFlickerPeriod"`
+	RPICameraTextOverlayEnable     bool      `json:"rpiCameraTextOverlayEnable"`
+	RPICameraTextOverlay           string    `json:"rpiCameraTextOverlay"`
+	RPICameraCodec                 string    `json:"rpiCameraCodec"`
+	RPICameraIDRPeriod             uint      `json:"rpiCameraIDRPeriod"`
+	RPICameraBitrate               uint      `json:"rpiCameraBitrate"`
+	RPICameraProfile               *string   `json:"rpiCameraProfile,omitempty"` // deprecated
+	RPICameraLevel                 *string   `json:"rpiCameraLevel,omitempty"`   // deprecated
+	RPICameraHardwareH264Profile   string    `json:"rpiCameraHardwareH264Profile"`
+	RPICameraHardwareH264Level     string    `json:"rpiCameraHardwareH264Level"`
+	RPICameraSoftwareH264Profile   string    `json:"rpiCameraSoftwareH264Profile"`
+	RPICameraSoftwareH264Level     string    `json:"rpiCameraSoftwareH264Level"`
+	RPICameraJPEGQuality           *uint     `json:"rpiCameraJPEGQuality,omitempty"` // deprecated
+	RPICameraMJPEGQuality          uint      `json:"rpiCameraMJPEGQuality"`
+	RPICameraPrimaryName           string    `json:"-"` // filled by Check()
+	RPICameraSecondaryWidth        uint      `json:"-"` // filled by Check()
+	RPICameraSecondaryHeight       uint      `json:"-"` // filled by Check()
+	RPICameraSecondaryFPS          float64   `json:"-"` // filled by Check()
+	RPICameraSecondaryMJPEGQuality uint      `json:"-"` // filled by Check()
 
 	// Hooks
 	RunOnInit                  string   `json:"runOnInit"`
@@ -230,8 +245,11 @@ func (pconf *Path) setDefaults() {
 	pconf.RecordPath = "./recordings/%path/%Y-%m-%d_%H-%M-%S-%f"
 	pconf.RecordFormat = RecordFormatFMP4
 	pconf.RecordPartDuration = Duration(1 * time.Second)
+	pconf.RecordMaxPartSize = 50 * 1024 * 1024
 	pconf.RecordSegmentDuration = 3600 * Duration(time.Second)
 	pconf.RecordDeleteAfter = 24 * 3600 * Duration(time.Second)
+
+	// berry's
 	pconf.RecordAudio = false
 	pconf.RecordTimestampCSV = false
 
@@ -257,9 +275,11 @@ func (pconf *Path) setDefaults() {
 	pconf.RPICameraCodec = "auto"
 	pconf.RPICameraIDRPeriod = 60
 	pconf.RPICameraBitrate = 5000000
-	pconf.RPICameraProfile = "main"
-	pconf.RPICameraLevel = "4.1"
-	pconf.RPICameraJPEGQuality = 60
+	pconf.RPICameraHardwareH264Profile = "main"
+	pconf.RPICameraHardwareH264Level = "4.1"
+	pconf.RPICameraSoftwareH264Profile = "baseline"
+	pconf.RPICameraSoftwareH264Level = "4.1"
+	pconf.RPICameraMJPEGQuality = 60
 
 	// Hooks
 	pconf.RunOnDemandStartTimeout = 10 * Duration(time.Second)
@@ -291,7 +311,7 @@ func (pconf Path) Clone() *Path {
 	dest.RPICameraSecondaryWidth = pconf.RPICameraSecondaryWidth
 	dest.RPICameraSecondaryHeight = pconf.RPICameraSecondaryHeight
 	dest.RPICameraSecondaryFPS = pconf.RPICameraSecondaryFPS
-	dest.RPICameraSecondaryJPEGQuality = pconf.RPICameraSecondaryJPEGQuality
+	dest.RPICameraSecondaryMJPEGQuality = pconf.RPICameraSecondaryMJPEGQuality
 
 	return &dest
 }
@@ -360,8 +380,12 @@ func (pconf *Path) validate(
 		}
 
 	case strings.HasPrefix(pconf.Source, "rtsp://") ||
-		strings.HasPrefix(pconf.Source, "rtsps://"):
-		_, err := base.ParseURL(pconf.Source)
+		strings.HasPrefix(pconf.Source, "rtsps://") ||
+		strings.HasPrefix(pconf.Source, "rtsp+http://") ||
+		strings.HasPrefix(pconf.Source, "rtsps+http://") ||
+		strings.HasPrefix(pconf.Source, "rtsp+ws://") ||
+		strings.HasPrefix(pconf.Source, "rtsps+ws://"):
+		_, err := url.Parse(pconf.Source)
 		if err != nil {
 			return fmt.Errorf("'%s' is not a valid URL", pconf.Source)
 		}
@@ -378,7 +402,7 @@ func (pconf *Path) validate(
 
 	case strings.HasPrefix(pconf.Source, "rtmp://") ||
 		strings.HasPrefix(pconf.Source, "rtmps://"):
-		u, err := gourl.Parse(pconf.Source)
+		u, err := url.Parse(pconf.Source)
 		if err != nil {
 			return fmt.Errorf("'%s' is not a valid URL", pconf.Source)
 		}
@@ -394,12 +418,8 @@ func (pconf *Path) validate(
 
 	case strings.HasPrefix(pconf.Source, "http://") ||
 		strings.HasPrefix(pconf.Source, "https://"):
-		u, err := gourl.Parse(pconf.Source)
+		u, err := url.Parse(pconf.Source)
 		if err != nil {
-			return fmt.Errorf("'%s' is not a valid URL", pconf.Source)
-		}
-
-		if u.Scheme != "http" && u.Scheme != "https" {
 			return fmt.Errorf("'%s' is not a valid URL", pconf.Source)
 		}
 
@@ -415,18 +435,41 @@ func (pconf *Path) validate(
 	case strings.HasPrefix(pconf.Source, "udp://"):
 		_, _, err := net.SplitHostPort(pconf.Source[len("udp://"):])
 		if err != nil {
-			return fmt.Errorf("'%s' is not a valid UDP URL", pconf.Source)
+			return fmt.Errorf("'%s' is not a valid UDP+MPEGTS URL", pconf.Source)
+		}
+
+	case strings.HasPrefix(pconf.Source, "udp+mpegts://"):
+		_, _, err := net.SplitHostPort(pconf.Source[len("udp+mpegts://"):])
+		if err != nil {
+			return fmt.Errorf("'%s' is not a valid UDP+MPEGTS URL", pconf.Source)
+		}
+
+	case strings.HasPrefix(pconf.Source, "unix+mpegts://"):
+
+	case strings.HasPrefix(pconf.Source, "udp+rtp://"):
+		_, _, err := net.SplitHostPort(pconf.Source[len("udp+rtp://"):])
+		if err != nil {
+			return fmt.Errorf("'%s' is not a valid UDP+RTP URL", pconf.Source)
+		}
+
+		if pconf.RTPSDP == "" {
+			return fmt.Errorf("`rtpSDP` was not provided")
+		}
+
+	case strings.HasPrefix(pconf.Source, "unix+rtp://"):
+		if pconf.RTPSDP == "" {
+			return fmt.Errorf("`rtpSDP` was not provided")
 		}
 
 	case strings.HasPrefix(pconf.Source, "srt://"):
-		_, err := gourl.Parse(pconf.Source)
+		_, err := url.Parse(pconf.Source)
 		if err != nil {
 			return fmt.Errorf("'%s' is not a valid URL", pconf.Source)
 		}
 
 	case strings.HasPrefix(pconf.Source, "whep://") ||
 		strings.HasPrefix(pconf.Source, "wheps://"):
-		_, err := gourl.Parse(pconf.Source)
+		_, err := url.Parse(pconf.Source)
 		if err != nil {
 			return fmt.Errorf("'%s' is not a valid URL", pconf.Source)
 		}
@@ -497,6 +540,48 @@ func (pconf *Path) validate(
 			return fmt.Errorf("invalid 'rpiCameraAfSpeed' value")
 		}
 
+		if pconf.RPICameraProfile != nil {
+			l.Log(logger.Warn, "parameter 'rpiCameraProfile' is deprecated"+
+				" and has been replaced with 'rpiCameraHardwareH264Profile'")
+			pconf.RPICameraHardwareH264Profile = *pconf.RPICameraProfile
+		}
+
+		if pconf.RPICameraLevel != nil {
+			l.Log(logger.Warn, "parameter 'rpiCameraLevel' is deprecated"+
+				" and has been replaced with 'rpiCameraHardwareH264Level'")
+			pconf.RPICameraHardwareH264Level = *pconf.RPICameraLevel
+		}
+
+		switch pconf.RPICameraHardwareH264Profile {
+		case "baseline", "main", "high":
+		default:
+			return fmt.Errorf("invalid 'rpiCameraHardwareH264Profile' value")
+		}
+
+		switch pconf.RPICameraHardwareH264Level {
+		case "4.0", "4.1", "4.2":
+		default:
+			return fmt.Errorf("invalid 'rpiCameraHardwareH264Level' value")
+		}
+
+		switch pconf.RPICameraSoftwareH264Profile {
+		case "baseline", "main", "high":
+		default:
+			return fmt.Errorf("invalid 'rpiCameraSoftwareH264Profile' value")
+		}
+
+		switch pconf.RPICameraSoftwareH264Level {
+		case "4.0", "4.1", "4.2":
+		default:
+			return fmt.Errorf("invalid 'rpiCameraSoftwareH264Level' value")
+		}
+
+		if pconf.RPICameraJPEGQuality != nil {
+			l.Log(logger.Warn, "parameter 'rpiCameraJPEGQuality' is deprecated"+
+				" and has been replaced with 'rpiCameraMJPEGQuality'")
+			pconf.RPICameraMJPEGQuality = *pconf.RPICameraJPEGQuality
+		}
+
 		if !pconf.RPICameraSecondary {
 			switch pconf.RPICameraCodec {
 			case "auto", "hardwareH264", "softwareH264":
@@ -548,7 +633,7 @@ func (pconf *Path) validate(
 			primary.RPICameraSecondaryWidth = pconf.RPICameraWidth
 			primary.RPICameraSecondaryHeight = pconf.RPICameraHeight
 			primary.RPICameraSecondaryFPS = pconf.RPICameraFPS
-			primary.RPICameraSecondaryJPEGQuality = pconf.RPICameraJPEGQuality
+			primary.RPICameraSecondaryMJPEGQuality = pconf.RPICameraMJPEGQuality
 		}
 
 	default:

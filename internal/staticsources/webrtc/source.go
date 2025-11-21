@@ -2,12 +2,13 @@
 package webrtc
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
@@ -18,14 +19,21 @@ import (
 	"github.com/bluenviron/mediamtx/internal/stream"
 )
 
+type parent interface {
+	logger.Writer
+	SetReady(req defs.PathSourceStaticSetReadyReq) defs.PathSourceStaticSetReadyRes
+	SetNotReady(req defs.PathSourceStaticSetNotReadyReq)
+}
+
 // Source is a WebRTC static source.
 type Source struct {
-	ReadTimeout conf.Duration
-	Parent      defs.StaticSourceParent
+	ReadTimeout       conf.Duration
+	UDPReadBufferSize uint
+	Parent            parent
 }
 
 // Log implements logger.Writer.
-func (s *Source) Log(level logger.Level, format string, args ...interface{}) {
+func (s *Source) Log(level logger.Level, format string, args ...any) {
 	s.Parent.Log(level, "[WebRTC source] "+format, args...)
 }
 
@@ -41,38 +49,39 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	u.Scheme = strings.ReplaceAll(u.Scheme, "whep", "http")
 
 	tr := &http.Transport{
-		TLSClientConfig: tls.ConfigForFingerprint(params.Conf.SourceFingerprint),
+		TLSClientConfig: tls.MakeConfig(u.Hostname(), params.Conf.SourceFingerprint),
 	}
 	defer tr.CloseIdleConnections()
 
 	client := whip.Client{
+		URL: u,
 		HTTPClient: &http.Client{
 			Timeout:   time.Duration(s.ReadTimeout),
 			Transport: tr,
 		},
-		UseAbsoluteTimestamp: params.Conf.UseAbsoluteTimestamp,
-		URL:                  u,
-		Log:                  s,
+		UDPReadBufferSize: s.UDPReadBufferSize,
+		Log:               s,
 	}
-
 	err = client.Initialize(params.Context)
 	if err != nil {
 		return err
 	}
-	defer client.Close() //nolint:errcheck
 
 	var stream *stream.Stream
 
-	medias, err := webrtc.ToStream(client.PeerConnection(), &stream)
+	medias, err := webrtc.ToStream(client.PeerConnection(), params.Conf, &stream, s)
 	if err != nil {
+		client.Close() //nolint:errcheck
 		return err
 	}
 
 	rres := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
 		Desc:               &description.Session{Medias: medias},
 		GenerateRTPPackets: true,
+		FillNTP:            !params.Conf.UseAbsoluteTimestamp,
 	})
 	if rres.Err != nil {
+		client.Close() //nolint:errcheck
 		return rres.Err
 	}
 
@@ -82,7 +91,26 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 
 	client.StartReading()
 
-	return client.Wait(params.Context)
+	readErr := make(chan error)
+
+	go func() {
+		readErr <- client.Wait()
+	}()
+
+	for {
+		select {
+		case err = <-readErr:
+			client.Close() //nolint:errcheck
+			return err
+
+		case <-params.ReloadConf:
+
+		case <-params.Context.Done():
+			client.Close() //nolint:errcheck
+			<-readErr
+			return fmt.Errorf("terminated")
+		}
+	}
 }
 
 // APISourceDescribe implements StaticSource.

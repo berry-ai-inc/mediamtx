@@ -55,6 +55,12 @@ type APIError struct {
 	Error string `json:"error"`
 }
 
+// APIInfo is a info response.
+type APIInfo struct {
+	Version string    `json:"version"`
+	Started time.Time `json:"started"`
+}
+
 // APIPathConfList is a list of path configurations.
 type APIPathConfList struct {
 	ItemCount int          `json:"itemCount"`
@@ -140,6 +146,7 @@ type APIRTSPConn struct {
 	BytesReceived uint64     `json:"bytesReceived"`
 	BytesSent     uint64     `json:"bytesSent"`
 	Session       *uuid.UUID `json:"session"`
+	Tunnel        string     `json:"tunnel"`
 }
 
 // APIRTSPConnsList is a list of RTSP connections.
@@ -168,6 +175,7 @@ type APIRTSPSession struct {
 	Path                string              `json:"path"`
 	Query               string              `json:"query"`
 	Transport           *string             `json:"transport"`
+	Profile             *string             `json:"profile"`
 	BytesReceived       uint64              `json:"bytesReceived"`
 	BytesSent           uint64              `json:"bytesSent"`
 	RTPPacketsReceived  uint64              `json:"rtpPacketsReceived"`
@@ -357,6 +365,12 @@ type APIWebRTCSession struct {
 	Query                     string                `json:"query"`
 	BytesReceived             uint64                `json:"bytesReceived"`
 	BytesSent                 uint64                `json:"bytesSent"`
+	RTPPacketsReceived        uint64                `json:"rtpPacketsReceived"`
+	RTPPacketsSent            uint64                `json:"rtpPacketsSent"`
+	RTPPacketsLost            uint64                `json:"rtpPacketsLost"`
+	RTPPacketsJitter          float64               `json:"rtpPacketsJitter"`
+	RTCPPacketsReceived       uint64                `json:"rtcpPacketsReceived"`
+	RTCPPacketsSent           uint64                `json:"rtcpPacketsSent"`
 }
 
 // APIWebRTCSessionList is a list of WebRTC sessions.

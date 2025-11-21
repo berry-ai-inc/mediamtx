@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	rtspformat "github.com/bluenviron/gortsplib/v4/pkg/format"
-	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h265"
+	amp4 "github.com/abema/go-mp4"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	rtspformat "github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/mp4"
@@ -17,6 +17,7 @@ import (
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/recordstore"
 	"github.com/bluenviron/mediamtx/internal/stream"
 	"github.com/bluenviron/mediamtx/internal/test"
 	"github.com/bluenviron/mediamtx/internal/unit"
@@ -41,7 +42,7 @@ func TestRecorder(t *testing.T) {
 			Type: description.MediaTypeAudio,
 			Formats: []rtspformat.Format{&rtspformat.MPEG4Audio{
 				PayloadTyp: 96,
-				Config: &mpeg4audio.Config{
+				Config: &mpeg4audio.AudioSpecificConfig{
 					Type:         2,
 					SampleRate:   44100,
 					ChannelCount: 2,
@@ -72,53 +73,43 @@ func TestRecorder(t *testing.T) {
 	}}
 
 	writeToStream := func(strm *stream.Stream, startDTS int64, startNTP time.Time) {
-		for i := 0; i < 2; i++ {
+		for i := range 2 {
 			pts := startDTS + int64(i)*100*90000/1000
 			ntp := startNTP.Add(time.Duration(i*60) * time.Second)
 
-			strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-				Base: unit.Base{
-					PTS: pts,
-					NTP: ntp,
-				},
-				AU: [][]byte{
+			strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+				PTS: pts,
+				NTP: ntp,
+				Payload: unit.PayloadH264{
 					test.FormatH264.SPS,
 					test.FormatH264.PPS,
 					{5}, // IDR
 				},
 			})
 
-			strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.H265{
-				Base: unit.Base{
-					PTS: pts,
-				},
-				AU: [][]byte{
+			strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.Unit{
+				PTS: pts,
+				Payload: unit.PayloadH265{
 					test.FormatH265.VPS,
 					test.FormatH265.SPS,
 					test.FormatH265.PPS,
-					{byte(h265.NALUType_CRA_NUT) << 1, 0}, // IDR
+					{0x26, 0x1, 0xaf, 0x8, 0x42, 0x23, 0x48, 0x8a, 0x43, 0xe2},
 				},
 			})
 
-			strm.WriteUnit(desc.Medias[2], desc.Medias[2].Formats[0], &unit.MPEG4Audio{
-				Base: unit.Base{
-					PTS: pts * int64(desc.Medias[2].Formats[0].ClockRate()) / 90000,
-				},
-				AUs: [][]byte{{1, 2, 3, 4}},
+			strm.WriteUnit(desc.Medias[2], desc.Medias[2].Formats[0], &unit.Unit{
+				PTS:     pts * int64(desc.Medias[2].Formats[0].ClockRate()) / 90000,
+				Payload: unit.PayloadMPEG4Audio{{1, 2, 3, 4}},
 			})
 
-			strm.WriteUnit(desc.Medias[3], desc.Medias[3].Formats[0], &unit.G711{
-				Base: unit.Base{
-					PTS: pts * int64(desc.Medias[3].Formats[0].ClockRate()) / 90000,
-				},
-				Samples: []byte{1, 2, 3, 4},
+			strm.WriteUnit(desc.Medias[3], desc.Medias[3].Formats[0], &unit.Unit{
+				PTS:     pts * int64(desc.Medias[3].Formats[0].ClockRate()) / 90000,
+				Payload: unit.PayloadG711{1, 2, 3, 4},
 			})
 
-			strm.WriteUnit(desc.Medias[4], desc.Medias[4].Formats[0], &unit.LPCM{
-				Base: unit.Base{
-					PTS: pts * int64(desc.Medias[4].Formats[0].ClockRate()) / 90000,
-				},
-				Samples: []byte{1, 2, 3, 4},
+			strm.WriteUnit(desc.Medias[4], desc.Medias[4].Formats[0], &unit.Unit{
+				PTS:     pts * int64(desc.Medias[4].Formats[0].ClockRate()) / 90000,
+				Payload: unit.PayloadLPCM{1, 2, 3, 4},
 			})
 		}
 	}
@@ -166,6 +157,7 @@ func TestRecorder(t *testing.T) {
 					PathFormat:      recordPath,
 					Format:          f,
 					PartDuration:    100 * time.Millisecond,
+					MaxPartSize:     50 * 1024 * 1024,
 					SegmentDuration: 1 * time.Second,
 					PathName:        "mypath",
 					Stream:          strm,
@@ -198,6 +190,7 @@ func TestRecorder(t *testing.T) {
 					Parent:       test.NilLogger,
 					restartPause: 1 * time.Millisecond,
 
+					// berry's
 					RecordAudio:        recAudio,
 					RecordTimestampCSV: true,
 				}
@@ -212,16 +205,14 @@ func TestRecorder(t *testing.T) {
 					time.Date(2008, 5, 20, 22, 16, 25, 0, time.UTC))
 
 				// simulate a write error
-				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-					Base: unit.Base{
-						PTS: 0,
-					},
-					AU: [][]byte{
+				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+					PTS: 0,
+					Payload: unit.PayloadH264{
 						{5}, // IDR
 					},
 				})
 
-				for i := 0; i < 2; i++ {
+				for range 2 {
 					<-segCreated
 					<-segDone
 				}
@@ -261,7 +252,7 @@ func TestRecorder(t *testing.T) {
 								ID:        3,
 								TimeScale: 44100,
 								Codec: &mp4.CodecMPEG4Audio{
-									Config: mpeg4audio.Config{
+									Config: mpeg4audio.AudioSpecificConfig{
 										Type:         2,
 										SampleRate:   44100,
 										ChannelCount: 2,
@@ -287,11 +278,19 @@ func TestRecorder(t *testing.T) {
 								},
 							},
 						},
+						UserData: []amp4.IBox{
+							&recordstore.Mtxi{
+								StreamID: init.UserData[0].(*recordstore.Mtxi).StreamID,
+								DTS:      50000000000,
+								NTP:      1211321725000000000,
+							},
+						},
 					}, init)
 
 					_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext))
 					require.NoError(t, err)
 
+					// berry's
 					csvFi, err2 := os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+"csv"))
 					require.NoError(t, err2)
 					require.Greater(t, csvFi.Size(), int64(0))
@@ -319,6 +318,7 @@ func TestRecorder(t *testing.T) {
 				_, err = os.Stat(filepath.Join(dir, "mypath", "2010-05-20_22-15-25-000000."+ext))
 				require.NoError(t, err)
 
+				// berry's
 				if ext == "mp4" {
 					byts, err := os.ReadFile(filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000.mp4"))
 					require.NoError(t, err)
@@ -364,7 +364,7 @@ func TestRecorder(t *testing.T) {
 	}
 }
 
-func TestRecorderFMP4NegativeDTS(t *testing.T) {
+func TestRecorderFMP4NegativeInitialDTS(t *testing.T) {
 	desc := &description.Session{Medias: []*description.Media{
 		{
 			Type: description.MediaTypeVideo,
@@ -377,7 +377,7 @@ func TestRecorderFMP4NegativeDTS(t *testing.T) {
 			Type: description.MediaTypeAudio,
 			Formats: []rtspformat.Format{&rtspformat.MPEG4Audio{
 				PayloadTyp: 96,
-				Config: &mpeg4audio.Config{
+				Config: &mpeg4audio.AudioSpecificConfig{
 					Type:         2,
 					SampleRate:   44100,
 					ChannelCount: 2,
@@ -410,6 +410,7 @@ func TestRecorderFMP4NegativeDTS(t *testing.T) {
 		PathFormat:      recordPath,
 		Format:          conf.RecordFormatFMP4,
 		PartDuration:    100 * time.Millisecond,
+		MaxPartSize:     50 * 1024 * 1024,
 		SegmentDuration: 1 * time.Second,
 		PathName:        "mypath",
 		Stream:          strm,
@@ -418,24 +419,20 @@ func TestRecorderFMP4NegativeDTS(t *testing.T) {
 	}
 	w.Initialize()
 
-	for i := 0; i < 3; i++ {
-		strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-			Base: unit.Base{
-				PTS: -50*90000/1000 + (int64(i) * 200 * 90000 / 1000),
-				NTP: time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC),
-			},
-			AU: [][]byte{
+	for i := range 3 {
+		strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+			PTS: -50*90000/1000 + (int64(i) * 200 * 90000 / 1000),
+			NTP: time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC),
+			Payload: unit.PayloadH264{
 				test.FormatH264.SPS,
 				test.FormatH264.PPS,
 				{5}, // IDR
 			},
 		})
 
-		strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.MPEG4Audio{
-			Base: unit.Base{
-				PTS: -100*44100/1000 + (int64(i) * 200 * 44100 / 1000),
-			},
-			AUs: [][]byte{{1, 2, 3, 4}},
+		strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.Unit{
+			PTS:     -100*44100/1000 + (int64(i) * 200 * 44100 / 1000),
+			Payload: unit.PayloadMPEG4Audio{{1, 2, 3, 4}},
 		})
 	}
 
@@ -455,13 +452,112 @@ func TestRecorderFMP4NegativeDTS(t *testing.T) {
 	for _, part := range parts {
 		for _, track := range part.Tracks {
 			if track.ID == 2 {
-				require.Less(t, track.BaseTime, uint64(1*90000))
+				require.Equal(t, uint64(6615), track.BaseTime)
 				found = true
 			}
 		}
 	}
 
 	require.True(t, found)
+}
+
+func TestRecorderFMP4NegativeDTSDiff(t *testing.T) {
+	desc := &description.Session{Medias: []*description.Media{
+		{
+			Type: description.MediaTypeVideo,
+			Formats: []rtspformat.Format{&rtspformat.MPEG4Audio{
+				PayloadTyp: 96,
+				Config: &mpeg4audio.AudioSpecificConfig{
+					Type:         2,
+					SampleRate:   44100,
+					ChannelCount: 2,
+				},
+				SizeLength:       13,
+				IndexLength:      3,
+				IndexDeltaLength: 3,
+			}},
+		},
+	}}
+
+	strm := &stream.Stream{
+		WriteQueueSize:     512,
+		RTPMaxPayloadSize:  1450,
+		Desc:               desc,
+		GenerateRTPPackets: true,
+		Parent:             test.NilLogger,
+	}
+	err := strm.Initialize()
+	require.NoError(t, err)
+	defer strm.Close()
+
+	dir, err := os.MkdirTemp("", "mediamtx-agent")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	recordPath := filepath.Join(dir, "%path/%Y-%m-%d_%H-%M-%S-%f")
+
+	w := &Recorder{
+		PathFormat:      recordPath,
+		Format:          conf.RecordFormatFMP4,
+		PartDuration:    100 * time.Millisecond,
+		MaxPartSize:     50 * 1024 * 1024,
+		SegmentDuration: 2 * time.Second,
+		PathName:        "mypath",
+		Stream:          strm,
+		Parent:          test.NilLogger,
+		RecordAudio:     true,
+	}
+	w.Initialize()
+
+	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+		PTS:     44100,
+		NTP:     time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC),
+		Payload: unit.PayloadMPEG4Audio{{1, 2}},
+	})
+
+	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+		PTS:     3 * 44100,
+		NTP:     time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC),
+		Payload: unit.PayloadMPEG4Audio{{1, 2}},
+	})
+
+	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+		PTS:     2 * 44100,
+		NTP:     time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC),
+		Payload: unit.PayloadMPEG4Audio{{1, 2}},
+	})
+
+	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+		PTS:     4 * 44100,
+		NTP:     time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC),
+		Payload: unit.PayloadMPEG4Audio{{1, 2}},
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	w.Close()
+
+	byts, err := os.ReadFile(filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000.mp4"))
+	require.NoError(t, err)
+
+	var parts fmp4.Parts
+	err = parts.Unmarshal(byts)
+	require.NoError(t, err)
+
+	require.Equal(t, fmp4.Parts{{
+		Tracks: []*fmp4.PartTrack{{
+			ID: 1,
+			Samples: []*fmp4.Sample{
+				{
+					Payload: []byte{1, 2},
+				},
+				{
+					Duration: 44100,
+					Payload:  []byte{1, 2},
+				},
+			},
+		}},
+	}}, parts)
 }
 
 func TestRecorderSkipTracksPartial(t *testing.T) {
@@ -497,7 +593,7 @@ func TestRecorderSkipTracksPartial(t *testing.T) {
 
 			n := 0
 
-			l := test.Logger(func(l logger.Level, format string, args ...interface{}) {
+			l := test.Logger(func(l logger.Level, format string, args ...any) {
 				if n == 0 {
 					require.Equal(t, logger.Warn, l)
 					require.Equal(t, "[recorder] skipping track 2 (VP8)", fmt.Sprintf(format, args...))
@@ -516,6 +612,7 @@ func TestRecorderSkipTracksPartial(t *testing.T) {
 				PathFormat:      recordPath,
 				Format:          fo,
 				PartDuration:    100 * time.Millisecond,
+				MaxPartSize:     50 * 1024 * 1024,
 				SegmentDuration: 1 * time.Second,
 				PathName:        "mypath",
 				Stream:          strm,
@@ -559,7 +656,7 @@ func TestRecorderSkipTracksFull(t *testing.T) {
 
 			n := 0
 
-			l := test.Logger(func(l logger.Level, format string, args ...interface{}) {
+			l := test.Logger(func(l logger.Level, format string, args ...any) {
 				if n == 0 {
 					require.Equal(t, logger.Warn, l)
 					require.Equal(t, "[recorder] no supported tracks found, skipping recording", fmt.Sprintf(format, args...))
@@ -578,6 +675,7 @@ func TestRecorderSkipTracksFull(t *testing.T) {
 				PathFormat:      recordPath,
 				Format:          fo,
 				PartDuration:    100 * time.Millisecond,
+				MaxPartSize:     50 * 1024 * 1024,
 				SegmentDuration: 1 * time.Second,
 				PathName:        "mypath",
 				Stream:          strm,
@@ -625,6 +723,7 @@ func TestRecorderFMP4SegmentSwitch(t *testing.T) {
 		PathFormat:      filepath.Join(dir, "%path/%Y-%m-%d_%H-%M-%S-%f"),
 		Format:          conf.RecordFormatFMP4,
 		PartDuration:    100 * time.Millisecond,
+		MaxPartSize:     50 * 1024 * 1024,
 		SegmentDuration: 1 * time.Second,
 		PathName:        "mypath",
 		Stream:          strm,
@@ -644,12 +743,10 @@ func TestRecorderFMP4SegmentSwitch(t *testing.T) {
 	pts := 50 * time.Second
 	ntp := time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC)
 
-	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-		Base: unit.Base{
-			PTS: int64(pts) * 90000 / int64(time.Second),
-			NTP: ntp,
-		},
-		AU: [][]byte{
+	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+		PTS: int64(pts) * 90000 / int64(time.Second),
+		NTP: ntp,
+		Payload: unit.PayloadH264{
 			{5}, // IDR
 		},
 	})
@@ -657,23 +754,19 @@ func TestRecorderFMP4SegmentSwitch(t *testing.T) {
 	pts += 700 * time.Millisecond
 	ntp = ntp.Add(700 * time.Millisecond)
 
-	strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.MPEG4Audio{ // segment switch should happen here
-		Base: unit.Base{
-			PTS: int64(pts) * 44100 / int64(time.Second),
-			NTP: ntp,
-		},
-		AUs: [][]byte{{1, 2}},
+	strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.Unit{ // segment switch should happen here
+		PTS:     int64(pts) * 44100 / int64(time.Second),
+		NTP:     ntp,
+		Payload: unit.PayloadMPEG4Audio{{1, 2}},
 	})
 
 	pts += 400 * time.Millisecond
 	ntp = ntp.Add(400 * time.Millisecond)
 
-	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-		Base: unit.Base{
-			PTS: int64(pts) * 90000 / int64(time.Second),
-			NTP: ntp,
-		},
-		AU: [][]byte{
+	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+		PTS: int64(pts) * 90000 / int64(time.Second),
+		NTP: ntp,
+		Payload: unit.PayloadH264{
 			{5}, // IDR
 		},
 	})
@@ -681,23 +774,19 @@ func TestRecorderFMP4SegmentSwitch(t *testing.T) {
 	pts += 100 * time.Millisecond
 	ntp = ntp.Add(100 * time.Millisecond)
 
-	strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.MPEG4Audio{
-		Base: unit.Base{
-			PTS: int64(pts) * 44100 / int64(time.Second),
-			NTP: ntp,
-		},
-		AUs: [][]byte{{3, 4}},
+	strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.Unit{
+		PTS:     int64(pts) * 44100 / int64(time.Second),
+		NTP:     ntp,
+		Payload: unit.PayloadMPEG4Audio{{3, 4}},
 	})
 
 	pts += 400 * time.Millisecond
 	ntp = ntp.Add(400 * time.Millisecond)
 
-	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-		Base: unit.Base{
-			PTS: int64(pts) * 90000 / int64(time.Second),
-			NTP: ntp,
-		},
-		AU: [][]byte{
+	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+		PTS: int64(pts) * 90000 / int64(time.Second),
+		NTP: ntp,
+		Payload: unit.PayloadH264{
 			{5}, // IDR
 		},
 	})

@@ -9,23 +9,26 @@ permissions:
   id-token: write
   attestations: write
   contents: write
+  issues: write
+  discussions: write
+  pull-requests: write
 
 jobs:
   binaries:
     runs-on: ubuntu-22.04
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - run: make binaries
 
     - run: cd binaries && sha256sum -b * > checksums.sha256
 
-    - uses: actions/attest-build-provenance@v2
+    - uses: actions/attest-build-provenance@v3
       with:
         subject-path: '${{ github.workspace }}/binaries/*'
 
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v5
       with:
         name: binaries
         path: binaries
@@ -35,12 +38,12 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v6
       with:
         name: binaries
         path: binaries
 
-    - uses: actions/github-script@v6
+    - uses: actions/github-script@v8
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
@@ -59,16 +62,16 @@ jobs:
             + `\n`
             + `## Security\n`
             + `\n`
-            + `Binaries have been produced by the [Release workflow](https://github.com/${owner}/${repo}/actions/workflows/release.yml)`
-            + ` without human intervention.\n`
+            + `Binaries are compiled from source through the [Release workflow](https://github.com/${owner}/${repo}/actions/workflows/release.yml) without human intervention,`
+            + ` preventing any external interference.\n`
             + `\n`
-            + 'You can verify that binaries have been produced by the workflow by using [GitHub Attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds):\n'
+            + 'You can verify that binaries have been produced by the workflow by using [GitHub Attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations):\n'
             + `\n`
             + '```\n'
             + `ls mediamtx_* | xargs -L1 gh attestation verify --repo bluenviron/mediamtx\n`
             + '```\n'
             + `\n`
-            + 'You can verify the binaries checksum by downloading `checksums.sha256` and running:\n'
+            + 'You can verify checksums of binaries by downloading `checksums.sha256` and running:\n'
             + `\n`
             + '```\n'
             + `cat checksums.sha256 | grep "$(ls mediamtx_*)" | sha256sum --check\n`
@@ -99,7 +102,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - uses: actions/github-script@v6
+    - uses: actions/github-script@v8
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
@@ -136,7 +139,9 @@ jobs:
                 body: `This issue is mentioned in release ${curTag.name} 🚀\n`
                   + `Check out the entire changelog by [clicking here](https://github.com/${owner}/${repo}/releases/tag/${curTag.name})`,
               });
-            } catch (exc) {}
+            } catch (exc) {
+              console.error(exc.toString());
+            }
           }
 
   # dockerhub:
@@ -144,9 +149,9 @@ jobs:
   #   runs-on: ubuntu-22.04
 
   #   steps:
-  #   - uses: actions/checkout@v4
+  #   - uses: actions/checkout@v6
 
-  #   - uses: actions/download-artifact@v4
+  #   - uses: actions/download-artifact@v6
   #     with:
   #       name: binaries
   #       path: binaries
@@ -155,19 +160,3 @@ jobs:
   #     env:
   #       DOCKER_USER: ${{ secrets.DOCKER_USER }}
   #       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-
-  # api_docs:
-  #   needs: binaries
-  #   runs-on: ubuntu-22.04
-
-  #   steps:
-  #   - uses: actions/checkout@v4
-
-  #   - run: make apidocs
-
-  #   - run: mv apidocs/*.html apidocs/index.html
-
-  #   - uses: peaceiris/actions-gh-pages@v3
-  #     with:
-  #       github_token: ${{ secrets.GITHUB_TOKEN }}
-  #       publish_dir: ./apidocs

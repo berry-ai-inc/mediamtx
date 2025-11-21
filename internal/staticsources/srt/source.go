@@ -4,8 +4,7 @@ package srt
 import (
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	mcmpegts "github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	srt "github.com/datarhei/gosrt"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
@@ -16,14 +15,20 @@ import (
 	"github.com/bluenviron/mediamtx/internal/stream"
 )
 
+type parent interface {
+	logger.Writer
+	SetReady(req defs.PathSourceStaticSetReadyReq) defs.PathSourceStaticSetReadyRes
+	SetNotReady(req defs.PathSourceStaticSetNotReadyReq)
+}
+
 // Source is a SRT static source.
 type Source struct {
 	ReadTimeout conf.Duration
-	Parent      defs.StaticSourceParent
+	Parent      parent
 }
 
 // Log implements logger.Writer.
-func (s *Source) Log(level logger.Level, format string, args ...interface{}) {
+func (s *Source) Log(level logger.Level, format string, args ...any) {
 	s.Parent.Log(level, "[SRT source] "+format, args...)
 }
 
@@ -54,7 +59,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 
 	for {
 		select {
-		case err := <-readDone:
+		case err = <-readDone:
 			sconn.Close()
 			return err
 
@@ -70,7 +75,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 
 func (s *Source) runReader(sconn srt.Conn) error {
 	sconn.SetReadDeadline(time.Now().Add(time.Duration(s.ReadTimeout)))
-	r := &mcmpegts.Reader{R: mcmpegts.NewBufferedReader(sconn)}
+	r := &mpegts.EnhancedReader{R: sconn}
 	err := r.Initialize()
 	if err != nil {
 		return err
@@ -106,6 +111,7 @@ func (s *Source) runReader(sconn srt.Conn) error {
 	res := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
 		Desc:               &description.Session{Medias: medias},
 		GenerateRTPPackets: true,
+		FillNTP:            true,
 	})
 	if res.Err != nil {
 		return res.Err
@@ -117,7 +123,7 @@ func (s *Source) runReader(sconn srt.Conn) error {
 
 	for {
 		sconn.SetReadDeadline(time.Now().Add(time.Duration(s.ReadTimeout)))
-		err := r.Read()
+		err = r.Read()
 		if err != nil {
 			return err
 		}

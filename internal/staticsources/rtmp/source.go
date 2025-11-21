@@ -8,7 +8,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
+	"github.com/bluenviron/gortmplib"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
@@ -18,15 +19,21 @@ import (
 	"github.com/bluenviron/mediamtx/internal/stream"
 )
 
+type parent interface {
+	logger.Writer
+	SetReady(req defs.PathSourceStaticSetReadyReq) defs.PathSourceStaticSetReadyRes
+	SetNotReady(req defs.PathSourceStaticSetNotReadyReq)
+}
+
 // Source is a RTMP static source.
 type Source struct {
 	ReadTimeout  conf.Duration
 	WriteTimeout conf.Duration
-	Parent       defs.StaticSourceParent
+	Parent       parent
 }
 
 // Log implements logger.Writer.
-func (s *Source) Log(level logger.Level, format string, args ...interface{}) {
+func (s *Source) Log(level logger.Level, format string, args ...any) {
 	s.Parent.Log(level, "[RTMP source] "+format, args...)
 }
 
@@ -49,48 +56,48 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		}
 	}
 
-	ctx, ctxCancel := context.WithCancel(context.Background())
+	connectCtx, connectCtxCancel := context.WithTimeout(params.Context, time.Duration(s.ReadTimeout))
+	conn := &gortmplib.Client{
+		URL:       u,
+		TLSConfig: tls.MakeConfig(u.Hostname(), params.Conf.SourceFingerprint),
+		Publish:   false,
+	}
+	err = conn.Initialize(connectCtx)
+	connectCtxCancel()
+	if err != nil {
+		return err
+	}
 
 	readDone := make(chan error)
 	go func() {
-		readDone <- s.runReader(ctx, u, params.Conf.SourceFingerprint)
+		readDone <- s.runReader(conn)
 	}()
 
 	for {
 		select {
-		case err := <-readDone:
-			ctxCancel()
+		case err = <-readDone:
+			conn.Close()
 			return err
 
 		case <-params.ReloadConf:
 
 		case <-params.Context.Done():
-			ctxCancel()
+			conn.Close()
 			<-readDone
 			return nil
 		}
 	}
 }
 
-func (s *Source) runReader(ctx context.Context, u *url.URL, fingerprint string) error {
-	connectCtx, connectCtxCancel := context.WithTimeout(ctx, time.Duration(s.ReadTimeout))
-	conn := &rtmp.Client{
-		URL:       u,
-		TLSConfig: tls.ConfigForFingerprint(fingerprint),
-		Publish:   false,
-	}
-	err := conn.Initialize(connectCtx)
-	connectCtxCancel()
-	if err != nil {
-		return err
-	}
+func (s *Source) runReader(conn *gortmplib.Client) error {
+	conn.NetConn().SetReadDeadline(time.Now().Add(time.Duration(s.ReadTimeout)))
+	conn.NetConn().SetWriteDeadline(time.Now().Add(time.Duration(s.WriteTimeout)))
 
-	r := &rtmp.Reader{
+	r := &gortmplib.Reader{
 		Conn: conn,
 	}
-	err = r.Initialize()
+	err := r.Initialize()
 	if err != nil {
-		conn.Close()
 		return err
 	}
 
@@ -98,21 +105,19 @@ func (s *Source) runReader(ctx context.Context, u *url.URL, fingerprint string) 
 
 	medias, err := rtmp.ToStream(r, &stream)
 	if err != nil {
-		conn.Close()
 		return err
 	}
 
 	if len(medias) == 0 {
-		conn.Close()
 		return fmt.Errorf("no supported tracks found")
 	}
 
 	res := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
 		Desc:               &description.Session{Medias: medias},
 		GenerateRTPPackets: true,
+		FillNTP:            true,
 	})
 	if res.Err != nil {
-		conn.Close()
 		return res.Err
 	}
 
@@ -120,26 +125,14 @@ func (s *Source) runReader(ctx context.Context, u *url.URL, fingerprint string) 
 
 	stream = res.Stream
 
-	readerErr := make(chan error)
-	go func() {
-		for {
-			conn.NetConn().SetReadDeadline(time.Now().Add(time.Duration(s.ReadTimeout)))
-			err := r.Read()
-			if err != nil {
-				readerErr <- err
-				return
-			}
+	conn.NetConn().SetWriteDeadline(time.Time{})
+
+	for {
+		conn.NetConn().SetReadDeadline(time.Now().Add(time.Duration(s.ReadTimeout)))
+		err = r.Read()
+		if err != nil {
+			return err
 		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		conn.Close()
-		<-readerErr
-		return fmt.Errorf("terminated")
-
-	case err := <-readerErr:
-		return err
 	}
 }
 

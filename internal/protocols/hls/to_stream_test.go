@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/bluenviron/gohlslib/v2"
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	"github.com/bluenviron/gortsplib/v4/pkg/format"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts"
+	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/stream"
 	"github.com/bluenviron/mediamtx/internal/test"
 	"github.com/bluenviron/mediamtx/internal/unit"
@@ -18,7 +19,7 @@ import (
 )
 
 func TestToStreamNoSupportedCodecs(t *testing.T) {
-	_, err := ToStream(nil, []*gohlslib.Track{}, nil)
+	_, err := ToStream(nil, []*gohlslib.Track{}, &conf.Path{}, nil)
 	require.Equal(t, ErrNoSupportedCodecs, err)
 }
 
@@ -77,7 +78,7 @@ func TestToStream(t *testing.T) {
 		}),
 	}
 
-	ln, err := net.Listen("tcp", "localhost:5780")
+	ln, err := net.Listen("tcp", "localhost:5781")
 	require.NoError(t, err)
 
 	go s.Serve(ln)
@@ -86,14 +87,17 @@ func TestToStream(t *testing.T) {
 	var strm *stream.Stream
 	done := make(chan struct{})
 
-	reader := test.NilLogger
+	r := &stream.Reader{Parent: test.NilLogger}
 
 	var c *gohlslib.Client
 	c = &gohlslib.Client{
-		URI: "http://localhost:5780/stream.m3u8",
+		URI: "http://localhost:5781/stream.m3u8",
 		OnTracks: func(tracks []*gohlslib.Track) error {
-			medias, err2 := ToStream(c, tracks, &strm)
+			medias, err2 := ToStream(c, tracks, &conf.Path{
+				UseAbsoluteTimestamp: true,
+			}, &strm)
 			require.NoError(t, err2)
+
 			require.Equal(t, []*description.Media{{
 				Type: description.MediaTypeVideo,
 				Formats: []format.Format{&format.H264{
@@ -112,17 +116,16 @@ func TestToStream(t *testing.T) {
 			err2 = strm.Initialize()
 			require.NoError(t, err2)
 
-			strm.AddReader(
-				reader,
+			r.OnData(
 				medias[0],
 				medias[0].Formats[0],
-				func(u unit.Unit) error {
-					require.Equal(t, time.Date(2018, 0o5, 20, 8, 17, 15, 0, time.UTC), u.GetNTP())
+				func(u *unit.Unit) error {
+					require.Equal(t, time.Date(2018, 0o5, 20, 8, 17, 15, 0, time.UTC), u.NTP)
 					close(done)
 					return nil
 				})
 
-			strm.StartReader(reader)
+			strm.AddReader(r)
 
 			return nil
 		},
@@ -133,6 +136,6 @@ func TestToStream(t *testing.T) {
 
 	<-done
 
-	strm.RemoveReader(reader)
+	strm.RemoveReader(r)
 	strm.Close()
 }

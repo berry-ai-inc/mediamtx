@@ -20,7 +20,7 @@ const (
 	recreatePause    = 10 * time.Second
 )
 
-func int64Ptr(v int64) *int64 {
+func ptrOf[T any](v T) *T {
 	return &v
 }
 
@@ -78,7 +78,7 @@ func (m *muxer) initialize() {
 	m.ctx = ctx
 	m.ctxCancel = ctxCancel
 	m.created = time.Now()
-	m.lastRequestTime = int64Ptr(time.Now().UnixNano())
+	m.lastRequestTime = ptrOf(time.Now().UnixNano())
 	m.bytesSent = new(uint64)
 	m.chGetInstance = make(chan muxerGetInstanceReq)
 
@@ -98,8 +98,8 @@ func (m *muxer) Close() {
 }
 
 // Log implements logger.Writer.
-func (m *muxer) Log(level logger.Level, format string, args ...interface{}) {
-	m.parent.Log(level, "[muxer %s] "+format, append([]interface{}{m.pathName}, args...)...)
+func (m *muxer) Log(level logger.Level, format string, args ...any) {
+	m.parent.Log(level, "[muxer %s] "+format, append([]any{m.pathName}, args...)...)
 }
 
 // PathName returns the path name.
@@ -184,7 +184,7 @@ func (m *muxer) runInner() error {
 		case req := <-m.chGetInstance:
 			req.res <- mi
 
-		case err := <-instanceError:
+		case err = <-instanceError:
 			if m.remoteAddr != "" {
 				return err
 			}
@@ -208,7 +208,7 @@ func (m *muxer) runInner() error {
 				bytesSent:       m.bytesSent,
 				parent:          m,
 			}
-			err := mi.initialize()
+			err = mi.initialize()
 			if err != nil {
 				m.Log(logger.Error, err.Error())
 				mi = nil

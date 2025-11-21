@@ -44,7 +44,7 @@ func (c *Cleaner) Close() {
 }
 
 // Log implements logger.Writer.
-func (c *Cleaner) Log(level logger.Level, format string, args ...interface{}) {
+func (c *Cleaner) Log(level logger.Level, format string, args ...any) {
 	c.Parent.Log(level, "[record cleaner]"+format, args...)
 }
 
@@ -128,6 +128,7 @@ func (c *Cleaner) deleteExpiredSegments(now time.Time, pathName string, pathConf
 	for _, seg := range segments {
 		c.Log(logger.Debug, "removing %s", seg.Fpath)
 		os.Remove(seg.Fpath)
+		// berry's
 		os.Remove(strings.Replace(seg.Fpath, ".mp4", ".csv", 1))
 	}
 

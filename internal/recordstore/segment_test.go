@@ -11,6 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func ptrOf[T any](v T) *T {
+	return &v
+}
+
 func TestFindAllPathsWithSegments(t *testing.T) {
 	dir, err := os.MkdirTemp("", "mediamtx-recordstore")
 	require.NoError(t, err)
@@ -24,11 +28,13 @@ func TestFindAllPathsWithSegments(t *testing.T) {
 
 	err = os.WriteFile(filepath.Join(dir, "path1", "2015-05-19_22-15-25-000427.mp4"), []byte{1}, 0o644)
 	require.NoError(t, err)
+	// berry's
 	err = os.WriteFile(filepath.Join(dir, "path1", "2015-05-19_22-15-25-000427.csv"), []byte{1}, 0o644)
 	require.NoError(t, err)
 
 	err = os.WriteFile(filepath.Join(dir, "path2", "2015-07-19_22-15-25-000427.mp4"), []byte{1}, 0o644)
 	require.NoError(t, err)
+	// berry's
 	err = os.WriteFile(filepath.Join(dir, "path2", "2015-07-19_22-15-25-000427.csv"), []byte{1}, 0o644)
 	require.NoError(t, err)
 
@@ -86,11 +92,13 @@ func TestFindSegments(t *testing.T) {
 
 			err = os.WriteFile(filepath.Join(dir, "path1", "2015-05-19_22-15-25-000427.mp4"), []byte{1}, 0o644)
 			require.NoError(t, err)
+			// berry's
 			err = os.WriteFile(filepath.Join(dir, "path1", "2015-05-19_22-15-25-000427.csv"), []byte{1}, 0o644)
 			require.NoError(t, err)
 
 			err = os.WriteFile(filepath.Join(dir, "path1", "2016-05-19_22-15-25-000427.mp4"), []byte{1}, 0o644)
 			require.NoError(t, err)
+			// berry's
 			err = os.WriteFile(filepath.Join(dir, "path1", "2016-05-19_22-15-25-000427.csv"), []byte{1}, 0o644)
 			require.NoError(t, err)
 
@@ -101,14 +109,11 @@ func TestFindSegments(t *testing.T) {
 			case "no filtering":
 
 			case "filtering":
-				tmp1 := time.Date(2015, 5, 19, 22, 18, 25, 427000, time.Local)
-				start = &tmp1
-				tmp2 := start.Add(60 * time.Minute)
-				end = &tmp2
+				start = ptrOf(time.Date(2015, 5, 19, 22, 18, 25, 427000, time.Local))
+				end = ptrOf(start.Add(60 * time.Minute))
 
 			case "start before first":
-				tmp1 := time.Date(2014, 5, 19, 22, 18, 25, 427000, time.Local)
-				start = &tmp1
+				start = ptrOf(time.Date(2014, 5, 19, 22, 18, 25, 427000, time.Local))
 			}
 
 			segments, err := FindSegments(

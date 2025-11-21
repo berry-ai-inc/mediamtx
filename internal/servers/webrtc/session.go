@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/google/uuid"
 	"github.com/pion/ice/v4"
 	"github.com/pion/sdp/v3"
@@ -41,12 +41,13 @@ type sessionParent interface {
 }
 
 type session struct {
+	udpReadBufferSize     uint
 	parentCtx             context.Context
 	ipsFromInterfaces     bool
 	ipsFromInterfacesList []string
 	additionalHosts       []string
 	iceUDPMux             ice.UDPMux
-	iceTCPMux             ice.TCPMux
+	iceTCPMux             *webrtc.TCPMuxWrapper
 	handshakeTimeout      conf.Duration
 	trackGatherTimeout    conf.Duration
 	stunGatherTimeout     conf.Duration
@@ -87,9 +88,9 @@ func (s *session) initialize() {
 }
 
 // Log implements logger.Writer.
-func (s *session) Log(level logger.Level, format string, args ...interface{}) {
+func (s *session) Log(level logger.Level, format string, args ...any) {
 	id := hex.EncodeToString(s.uuid[:4])
-	s.parent.Log(level, "[session %v] "+format, append([]interface{}{id}, args...)...)
+	s.parent.Log(level, "[session %v] "+format, append([]any{id}, args...)...)
 }
 
 func (s *session) Close() {
@@ -137,25 +138,20 @@ func (s *session) runInner2() (int, error) {
 func (s *session) runPublish() (int, error) {
 	ip, _, _ := net.SplitHostPort(s.req.remoteAddr)
 
-	req := defs.PathAccessRequest{
-		Name:        s.req.pathName,
-		Query:       s.req.httpRequest.URL.RawQuery,
-		Publish:     true,
-		Proto:       auth.ProtocolWebRTC,
-		ID:          &s.uuid,
-		Credentials: httpp.Credentials(s.req.httpRequest),
-		IP:          net.ParseIP(ip),
-	}
-
-	path, err := s.pathManager.AddPublisher(defs.PathAddPublisherReq{
-		Author:        s,
-		AccessRequest: req,
+	pathConf, err := s.pathManager.FindPathConf(defs.PathFindPathConfReq{
+		AccessRequest: defs.PathAccessRequest{
+			Name:        s.req.pathName,
+			Query:       s.req.httpRequest.URL.RawQuery,
+			Publish:     true,
+			Proto:       auth.ProtocolWebRTC,
+			ID:          &s.uuid,
+			Credentials: httpp.Credentials(s.req.httpRequest),
+			IP:          net.ParseIP(ip),
+		},
 	})
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
-
-	defer path.RemovePublisher(defs.PathRemovePublisherReq{Author: s})
 
 	iceServers, err := s.parent.generateICEServers(false)
 	if err != nil {
@@ -163,6 +159,7 @@ func (s *session) runPublish() (int, error) {
 	}
 
 	pc := &webrtc.PeerConnection{
+		UDPReadBufferSize:     s.udpReadBufferSize,
 		ICEUDPMux:             s.iceUDPMux,
 		ICETCPMux:             s.iceTCPMux,
 		ICEServers:            iceServers,
@@ -173,14 +170,27 @@ func (s *session) runPublish() (int, error) {
 		TrackGatherTimeout:    s.trackGatherTimeout,
 		STUNGatherTimeout:     s.stunGatherTimeout,
 		Publish:               false,
-		UseAbsoluteTimestamp:  path.SafeConf().UseAbsoluteTimestamp,
 		Log:                   s,
 	}
 	err = pc.Start()
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
-	defer pc.Close()
+
+	terminatorDone := make(chan struct{})
+	defer func() { <-terminatorDone }()
+
+	terminatorRun := make(chan struct{})
+	defer close(terminatorRun)
+
+	go func() {
+		defer close(terminatorDone)
+		select {
+		case <-s.ctx.Done():
+		case <-terminatorRun:
+		}
+		pc.Close()
+	}()
 
 	offer := whipOffer(s.req.offer)
 
@@ -200,7 +210,7 @@ func (s *session) runPublish() (int, error) {
 		return http.StatusNotAcceptable, err
 	}
 
-	answer, err := pc.CreateFullAnswer(s.ctx, offer)
+	answer, err := pc.CreateFullAnswer(offer)
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
@@ -209,7 +219,7 @@ func (s *session) runPublish() (int, error) {
 
 	go s.readRemoteCandidates(pc)
 
-	err = pc.WaitUntilConnected(s.ctx)
+	err = pc.WaitUntilConnected()
 	if err != nil {
 		return 0, err
 	}
@@ -218,26 +228,37 @@ func (s *session) runPublish() (int, error) {
 	s.pc = pc
 	s.mutex.Unlock()
 
-	err = pc.GatherIncomingTracks(s.ctx)
+	err = pc.GatherIncomingTracks()
 	if err != nil {
 		return 0, err
 	}
 
 	var stream *stream.Stream
 
-	medias, err := webrtc.ToStream(pc, &stream)
+	medias, err := webrtc.ToStream(pc, pathConf, &stream, s)
 	if err != nil {
 		return 0, err
 	}
 
-	stream, err = path.StartPublisher(defs.PathStartPublisherReq{
+	var path defs.Path
+	path, stream, err = s.pathManager.AddPublisher(defs.PathAddPublisherReq{
 		Author:             s,
 		Desc:               &description.Session{Medias: medias},
 		GenerateRTPPackets: false,
+		FillNTP:            !pathConf.UseAbsoluteTimestamp,
+		ConfToCompare:      pathConf,
+		AccessRequest: defs.PathAccessRequest{
+			Name:     s.req.pathName,
+			Query:    s.req.httpRequest.URL.RawQuery,
+			Publish:  true,
+			SkipAuth: true,
+		},
 	})
 	if err != nil {
 		return 0, err
 	}
+
+	defer path.RemovePublisher(defs.PathRemovePublisherReq{Author: s})
 
 	pc.StartReading()
 
@@ -262,7 +283,7 @@ func (s *session) runRead() (int, error) {
 		IP:          net.ParseIP(ip),
 	}
 
-	path, stream, err := s.pathManager.AddReader(defs.PathAddReaderReq{
+	path, strm, err := s.pathManager.AddReader(defs.PathAddReaderReq{
 		Author:        s,
 		AccessRequest: req,
 	})
@@ -283,6 +304,7 @@ func (s *session) runRead() (int, error) {
 	}
 
 	pc := &webrtc.PeerConnection{
+		UDPReadBufferSize:     s.udpReadBufferSize,
 		ICEUDPMux:             s.iceUDPMux,
 		ICETCPMux:             s.iceTCPMux,
 		ICEServers:            iceServers,
@@ -293,27 +315,40 @@ func (s *session) runRead() (int, error) {
 		TrackGatherTimeout:    s.trackGatherTimeout,
 		STUNGatherTimeout:     s.stunGatherTimeout,
 		Publish:               true,
-		UseAbsoluteTimestamp:  path.SafeConf().UseAbsoluteTimestamp,
 		Log:                   s,
 	}
 
-	err = webrtc.FromStream(stream, s, pc)
+	r := &stream.Reader{Parent: s}
+
+	err = webrtc.FromStream(strm.Desc, r, pc)
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
 
 	err = pc.Start()
 	if err != nil {
-		stream.RemoveReader(s)
 		return http.StatusBadRequest, err
 	}
-	defer pc.Close()
+
+	terminatorDone := make(chan struct{})
+	defer func() { <-terminatorDone }()
+
+	terminatorRun := make(chan struct{})
+	defer close(terminatorRun)
+
+	go func() {
+		defer close(terminatorDone)
+		select {
+		case <-s.ctx.Done():
+		case <-terminatorRun:
+		}
+		pc.Close()
+	}()
 
 	offer := whipOffer(s.req.offer)
 
-	answer, err := pc.CreateFullAnswer(s.ctx, offer)
+	answer, err := pc.CreateFullAnswer(offer)
 	if err != nil {
-		stream.RemoveReader(s)
 		return http.StatusBadRequest, err
 	}
 
@@ -321,9 +356,8 @@ func (s *session) runRead() (int, error) {
 
 	go s.readRemoteCandidates(pc)
 
-	err = pc.WaitUntilConnected(s.ctx)
+	err = pc.WaitUntilConnected()
 	if err != nil {
-		stream.RemoveReader(s)
 		return 0, err
 	}
 
@@ -332,7 +366,7 @@ func (s *session) runRead() (int, error) {
 	s.mutex.Unlock()
 
 	s.Log(logger.Info, "is reading from path '%s', %s",
-		path.Name(), defs.FormatsInfo(stream.ReaderFormats(s)))
+		path.Name(), defs.FormatsInfo(r.Formats()))
 
 	onUnreadHook := hooks.OnRead(hooks.OnReadParams{
 		Logger:          s,
@@ -344,14 +378,14 @@ func (s *session) runRead() (int, error) {
 	})
 	defer onUnreadHook()
 
-	stream.StartReader(s)
-	defer stream.RemoveReader(s)
+	strm.AddReader(r)
+	defer strm.RemoveReader(r)
 
 	select {
 	case <-pc.Failed():
 		return 0, fmt.Errorf("peer connection closed")
 
-	case err := <-stream.ReaderError(s):
+	case err = <-r.Error():
 		return 0, err
 
 	case <-s.ctx.Done():
@@ -430,13 +464,26 @@ func (s *session) apiItem() *defs.APIWebRTCSession {
 	remoteCandidate := ""
 	bytesReceived := uint64(0)
 	bytesSent := uint64(0)
+	rtpPacketsReceived := uint64(0)
+	rtpPacketsSent := uint64(0)
+	rtpPacketsLost := uint64(0)
+	rtpPacketsJitter := float64(0)
+	rtcpPacketsReceived := uint64(0)
+	rtcpPacketsSent := uint64(0)
 
 	if s.pc != nil {
 		peerConnectionEstablished = true
 		localCandidate = s.pc.LocalCandidate()
 		remoteCandidate = s.pc.RemoteCandidate()
-		bytesReceived = s.pc.BytesReceived()
-		bytesSent = s.pc.BytesSent()
+		stats := s.pc.Stats()
+		bytesReceived = stats.BytesReceived
+		bytesSent = stats.BytesSent
+		rtpPacketsReceived = stats.RTPPacketsReceived
+		rtpPacketsSent = stats.RTPPacketsSent
+		rtpPacketsLost = stats.RTPPacketsLost
+		rtpPacketsJitter = stats.RTPPacketsJitter
+		rtcpPacketsReceived = stats.RTCPPacketsReceived
+		rtcpPacketsSent = stats.RTCPPacketsSent
 	}
 
 	return &defs.APIWebRTCSession{
@@ -452,9 +499,15 @@ func (s *session) apiItem() *defs.APIWebRTCSession {
 			}
 			return defs.APIWebRTCSessionStateRead
 		}(),
-		Path:          s.req.pathName,
-		Query:         s.req.httpRequest.URL.RawQuery,
-		BytesReceived: bytesReceived,
-		BytesSent:     bytesSent,
+		Path:                s.req.pathName,
+		Query:               s.req.httpRequest.URL.RawQuery,
+		BytesReceived:       bytesReceived,
+		BytesSent:           bytesSent,
+		RTPPacketsReceived:  rtpPacketsReceived,
+		RTPPacketsSent:      rtpPacketsSent,
+		RTPPacketsLost:      rtpPacketsLost,
+		RTPPacketsJitter:    rtpPacketsJitter,
+		RTCPPacketsReceived: rtcpPacketsReceived,
+		RTCPPacketsSent:     rtcpPacketsSent,
 	}
 }

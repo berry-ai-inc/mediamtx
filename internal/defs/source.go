@@ -4,17 +4,17 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	"github.com/bluenviron/gortsplib/v4/pkg/format"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
 
 	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
 // Source is an entity that can provide a stream.
 // it can be:
-// - publisher
+// - Publisher
 // - staticsources.Handler
-// - redirectSource
+// - core.sourceRedirect
 type Source interface {
 	logger.Writer
 	APISourceDescribe() APIPathSourceOrReader

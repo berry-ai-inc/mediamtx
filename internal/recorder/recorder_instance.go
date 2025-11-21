@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
+	"github.com/google/uuid"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/logger"
@@ -22,6 +23,7 @@ type recorderInstance struct {
 	pathFormat        string
 	format            conf.RecordFormat
 	partDuration      time.Duration
+	maxPartSize       conf.StringSize
 	segmentDuration   time.Duration
 	pathName          string
 	stream            *stream.Stream
@@ -29,10 +31,13 @@ type recorderInstance struct {
 	onSegmentComplete OnSegmentCompleteFunc
 	parent            logger.Writer
 
+	streamID    uuid.UUID
 	pathFormat2 string
 	format2     format
 	skip        bool
+	reader      *stream.Reader
 
+	// berry's
 	recordAudio        bool
 	recordTimestampCSV bool
 
@@ -41,17 +46,21 @@ type recorderInstance struct {
 }
 
 // Log implements logger.Writer.
-func (ri *recorderInstance) Log(level logger.Level, format string, args ...interface{}) {
+func (ri *recorderInstance) Log(level logger.Level, format string, args ...any) {
 	ri.parent.Log(level, format, args...)
 }
 
 func (ri *recorderInstance) initialize() {
+	ri.streamID = uuid.New()
 	ri.pathFormat2 = ri.pathFormat
-
 	ri.pathFormat2 = recordstore.PathAddExtension(
 		strings.ReplaceAll(ri.pathFormat2, "%path", ri.pathName),
 		ri.format,
 	)
+	ri.reader = &stream.Reader{
+		SkipBytesSent: true,
+		Parent:        ri,
+	}
 
 	ri.terminate = make(chan struct{})
 	ri.done = make(chan struct{})
@@ -73,7 +82,7 @@ func (ri *recorderInstance) initialize() {
 	}
 
 	if !ri.skip {
-		ri.stream.StartReader(ri)
+		ri.stream.AddReader(ri.reader)
 	}
 
 	go ri.run()
@@ -89,13 +98,13 @@ func (ri *recorderInstance) run() {
 
 	if !ri.skip {
 		select {
-		case err := <-ri.stream.ReaderError(ri):
+		case err := <-ri.reader.Error():
 			ri.Log(logger.Error, err.Error())
 
 		case <-ri.terminate:
 		}
 
-		ri.stream.RemoveReader(ri)
+		ri.stream.RemoveReader(ri.reader)
 	} else {
 		<-ri.terminate
 	}

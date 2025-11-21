@@ -16,6 +16,7 @@ import (
 type openAPIProperty struct {
 	Ref      string           `json:"$ref"`
 	Type     string           `json:"type"`
+	Format   string           `json:"format"`
 	Nullable bool             `json:"nullable"`
 	Items    *openAPIProperty `json:"items"`
 }
@@ -32,7 +33,7 @@ type openAPI struct {
 }
 
 func TestAPIDocs(t *testing.T) {
-	byts, err := os.ReadFile("../../apidocs/openapi.yaml")
+	byts, err := os.ReadFile("../../api/openapi.yaml")
 	require.NoError(t, err)
 
 	var doc openAPI
@@ -43,6 +44,10 @@ func TestAPIDocs(t *testing.T) {
 		openAPIKey string
 		goStruct   any
 	}{
+		{
+			"Info",
+			defs.APIInfo{},
+		},
 		{
 			"AuthInternalUser",
 			conf.AuthInternalUser{},
@@ -156,8 +161,17 @@ func TestAPIDocs(t *testing.T) {
 					case sf.Type == reflect.TypeOf(""):
 						content2.Properties[js] = openAPIProperty{Type: "string"}
 
+					case sf.Type == reflect.PointerTo(reflect.TypeOf("")):
+						content2.Properties[js] = openAPIProperty{
+							Type:     "string",
+							Nullable: true,
+						}
+
 					case sf.Type == reflect.TypeOf(int(0)):
-						content2.Properties[js] = openAPIProperty{Type: "integer"}
+						content2.Properties[js] = openAPIProperty{Type: "integer", Format: "int64"}
+
+					case sf.Type == reflect.TypeOf(float64(0)):
+						content2.Properties[js] = openAPIProperty{Type: "number", Format: "float64"}
 
 					case sf.Type == reflect.TypeOf(false):
 						content2.Properties[js] = openAPIProperty{Type: "boolean"}

@@ -3,7 +3,7 @@ package defs
 import (
 	"fmt"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
@@ -25,8 +25,6 @@ type Path interface {
 	Name() string
 	SafeConf() *conf.Path
 	ExternalCmdEnv() externalcmd.Environment
-	StartPublisher(req PathStartPublisherReq) (*stream.Stream, error)
-	StopPublisher(req PathStopPublisherReq)
 	RemovePublisher(req PathRemovePublisherReq)
 	RemoveReader(req PathRemoveReaderReq)
 }
@@ -59,39 +57,24 @@ type PathDescribeReq struct {
 
 // PathAddPublisherRes contains the response of AddPublisher().
 type PathAddPublisherRes struct {
-	Path Path
-	Err  error
-}
-
-// PathAddPublisherReq contains arguments of AddPublisher().
-type PathAddPublisherReq struct {
-	Author        Publisher
-	AccessRequest PathAccessRequest
-	Res           chan PathAddPublisherRes
-}
-
-// PathRemovePublisherReq contains arguments of RemovePublisher().
-type PathRemovePublisherReq struct {
-	Author Publisher
-	Res    chan struct{}
-}
-
-// PathStartPublisherRes contains the response of StartPublisher().
-type PathStartPublisherRes struct {
+	Path   Path
 	Stream *stream.Stream
 	Err    error
 }
 
-// PathStartPublisherReq contains arguments of StartPublisher().
-type PathStartPublisherReq struct {
+// PathAddPublisherReq contains arguments of AddPublisher().
+type PathAddPublisherReq struct {
 	Author             Publisher
 	Desc               *description.Session
 	GenerateRTPPackets bool
-	Res                chan PathStartPublisherRes
+	FillNTP            bool
+	ConfToCompare      *conf.Path
+	AccessRequest      PathAccessRequest
+	Res                chan PathAddPublisherRes
 }
 
-// PathStopPublisherReq contains arguments of StopPublisher().
-type PathStopPublisherReq struct {
+// PathRemovePublisherReq contains arguments of RemovePublisher().
+type PathRemovePublisherReq struct {
 	Author Publisher
 	Res    chan struct{}
 }
@@ -126,6 +109,7 @@ type PathSourceStaticSetReadyRes struct {
 type PathSourceStaticSetReadyReq struct {
 	Desc               *description.Session
 	GenerateRTPPackets bool
+	FillNTP            bool
 	Res                chan PathSourceStaticSetReadyRes
 }
 

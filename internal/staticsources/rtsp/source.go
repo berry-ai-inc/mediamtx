@@ -2,11 +2,13 @@
 package rtsp
 
 import (
+	"net/url"
+	"regexp"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4"
-	"github.com/bluenviron/gortsplib/v4/pkg/base"
-	"github.com/bluenviron/gortsplib/v4/pkg/headers"
+	"github.com/bluenviron/gortsplib/v5"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/headers"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/counterdumper"
@@ -61,16 +63,23 @@ func createRangeHeader(cnf *conf.Path) (*headers.Range, error) {
 	}
 }
 
+type parent interface {
+	logger.Writer
+	SetReady(req defs.PathSourceStaticSetReadyReq) defs.PathSourceStaticSetReadyRes
+	SetNotReady(req defs.PathSourceStaticSetNotReadyReq)
+}
+
 // Source is a RTSP static source.
 type Source struct {
-	ReadTimeout    conf.Duration
-	WriteTimeout   conf.Duration
-	WriteQueueSize int
-	Parent         defs.StaticSourceParent
+	ReadTimeout       conf.Duration
+	WriteTimeout      conf.Duration
+	WriteQueueSize    int
+	UDPReadBufferSize uint
+	Parent            parent
 }
 
 // Log implements logger.Writer.
-func (s *Source) Log(level logger.Level, format string, args ...interface{}) {
+func (s *Source) Log(level logger.Level, format string, args ...any) {
 	s.Parent.Log(level, "[RTSP source] "+format, args...)
 }
 
@@ -110,20 +119,49 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	decodeErrors.Start()
 	defer decodeErrors.Stop()
 
-	u, err := base.ParseURL(params.ResolvedSource)
+	u0, err := url.Parse(params.ResolvedSource)
 	if err != nil {
 		return err
 	}
 
+	var scheme string
+	if u0.Scheme == "rtsp" || u0.Scheme == "rtsp+http" || u0.Scheme == "rtsp+ws" {
+		scheme = "rtsp"
+	} else {
+		scheme = "rtsps"
+	}
+
+	var tunnel gortsplib.Tunnel
+	switch u0.Scheme {
+	case "rtsp+http", "rtsps+http":
+		tunnel = gortsplib.TunnelHTTP
+	case "rtsp+ws", "rtsps+ws":
+		tunnel = gortsplib.TunnelWebSocket
+	default:
+		tunnel = gortsplib.TunnelNone
+	}
+
+	u, err := base.ParseURL(regexp.MustCompile("^.*?://").ReplaceAllString(params.ResolvedSource, "rtsp://"))
+	if err != nil {
+		return err
+	}
+
+	udpReadBufferSize := s.UDPReadBufferSize
+	if params.Conf.RTSPUDPReadBufferSize != nil {
+		udpReadBufferSize = *params.Conf.RTSPUDPReadBufferSize
+	}
+
 	c := &gortsplib.Client{
-		Scheme:         u.Scheme,
-		Host:           u.Host,
-		Transport:      params.Conf.RTSPTransport.Transport,
-		TLSConfig:      tls.ConfigForFingerprint(params.Conf.SourceFingerprint),
-		ReadTimeout:    time.Duration(s.ReadTimeout),
-		WriteTimeout:   time.Duration(s.WriteTimeout),
-		WriteQueueSize: s.WriteQueueSize,
-		AnyPortEnable:  params.Conf.RTSPAnyPort,
+		Scheme:            scheme,
+		Host:              u.Host,
+		Tunnel:            tunnel,
+		Protocol:          params.Conf.RTSPTransport.Protocol,
+		TLSConfig:         tls.MakeConfig(u.Hostname(), params.Conf.SourceFingerprint),
+		ReadTimeout:       time.Duration(s.ReadTimeout),
+		WriteTimeout:      time.Duration(s.WriteTimeout),
+		WriteQueueSize:    s.WriteQueueSize,
+		UDPReadBufferSize: int(udpReadBufferSize),
+		AnyPortEnable:     params.Conf.RTSPAnyPort,
 		OnRequest: func(req *base.Request) {
 			s.Log(logger.Debug, "[c->s] %v", req)
 		},
@@ -141,7 +179,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		},
 	}
 
-	err = c.Start2()
+	err = c.Start()
 	if err != nil {
 		return err
 	}
@@ -150,19 +188,20 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	readErr := make(chan error)
 	go func() {
 		readErr <- func() error {
-			desc, _, err := c.Describe(u)
-			if err != nil {
-				return err
+			desc, _, err2 := c.Describe(u)
+			if err2 != nil {
+				return err2
 			}
 
-			err = c.SetupAll(desc.BaseURL, desc.Medias)
-			if err != nil {
-				return err
+			err2 = c.SetupAll(desc.BaseURL, desc.Medias)
+			if err2 != nil {
+				return err2
 			}
 
 			res := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
 				Desc:               desc,
 				GenerateRTPPackets: false,
+				FillNTP:            !params.Conf.UseAbsoluteTimestamp,
 			})
 			if res.Err != nil {
 				return res.Err
@@ -177,14 +216,14 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 				res.Stream,
 				s)
 
-			rangeHeader, err := createRangeHeader(params.Conf)
-			if err != nil {
-				return err
+			rangeHeader, err2 := createRangeHeader(params.Conf)
+			if err2 != nil {
+				return err2
 			}
 
-			_, err = c.Play(rangeHeader)
-			if err != nil {
-				return err
+			_, err2 = c.Play(rangeHeader)
+			if err2 != nil {
+				return err2
 			}
 
 			return c.Wait()
@@ -193,7 +232,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 
 	for {
 		select {
-		case err := <-readErr:
+		case err = <-readErr:
 			return err
 
 		case <-params.ReloadConf:

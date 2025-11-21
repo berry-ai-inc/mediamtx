@@ -12,11 +12,12 @@ import (
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	sshls "github.com/bluenviron/mediamtx/internal/staticsources/hls"
+	ssmpegts "github.com/bluenviron/mediamtx/internal/staticsources/mpegts"
 	ssrpicamera "github.com/bluenviron/mediamtx/internal/staticsources/rpicamera"
 	ssrtmp "github.com/bluenviron/mediamtx/internal/staticsources/rtmp"
+	ssrtp "github.com/bluenviron/mediamtx/internal/staticsources/rtp"
 	ssrtsp "github.com/bluenviron/mediamtx/internal/staticsources/rtsp"
 	sssrt "github.com/bluenviron/mediamtx/internal/staticsources/srt"
-	ssudp "github.com/bluenviron/mediamtx/internal/staticsources/udp"
 	sswebrtc "github.com/bluenviron/mediamtx/internal/staticsources/webrtc"
 	"github.com/bluenviron/mediamtx/internal/stream"
 )
@@ -43,6 +44,12 @@ func resolveSource(s string, matches []string, query string) string {
 	return s
 }
 
+type staticSource interface {
+	logger.Writer
+	Run(defs.StaticSourceRunParams) error
+	APISourceDescribe() defs.APIPathSourceOrReader
+}
+
 type handlerPathManager interface {
 	AddReader(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error)
 }
@@ -60,6 +67,7 @@ type Handler struct {
 	ReadTimeout       conf.Duration
 	WriteTimeout      conf.Duration
 	WriteQueueSize    int
+	UDPReadBufferSize uint
 	RTPMaxPayloadSize int
 	Matches           []string
 	PathManager       handlerPathManager
@@ -67,7 +75,7 @@ type Handler struct {
 
 	ctx       context.Context
 	ctxCancel func()
-	instance  defs.StaticSource
+	instance  staticSource
 	running   bool
 	query     string
 
@@ -88,12 +96,17 @@ func (s *Handler) Initialize() {
 
 	switch {
 	case strings.HasPrefix(s.Conf.Source, "rtsp://") ||
-		strings.HasPrefix(s.Conf.Source, "rtsps://"):
+		strings.HasPrefix(s.Conf.Source, "rtsps://") ||
+		strings.HasPrefix(s.Conf.Source, "rtsp+http://") ||
+		strings.HasPrefix(s.Conf.Source, "rtsps+http://") ||
+		strings.HasPrefix(s.Conf.Source, "rtsp+ws://") ||
+		strings.HasPrefix(s.Conf.Source, "rtsps+ws://"):
 		s.instance = &ssrtsp.Source{
-			ReadTimeout:    s.ReadTimeout,
-			WriteTimeout:   s.WriteTimeout,
-			WriteQueueSize: s.WriteQueueSize,
-			Parent:         s,
+			ReadTimeout:       s.ReadTimeout,
+			WriteTimeout:      s.WriteTimeout,
+			WriteQueueSize:    s.WriteQueueSize,
+			UDPReadBufferSize: s.UDPReadBufferSize,
+			Parent:            s,
 		}
 
 	case strings.HasPrefix(s.Conf.Source, "rtmp://") ||
@@ -111,10 +124,13 @@ func (s *Handler) Initialize() {
 			Parent:      s,
 		}
 
-	case strings.HasPrefix(s.Conf.Source, "udp://"):
-		s.instance = &ssudp.Source{
-			ReadTimeout: s.ReadTimeout,
-			Parent:      s,
+	case strings.HasPrefix(s.Conf.Source, "udp://") ||
+		strings.HasPrefix(s.Conf.Source, "udp+mpegts://") ||
+		strings.HasPrefix(s.Conf.Source, "unix+mpegts://"):
+		s.instance = &ssmpegts.Source{
+			ReadTimeout:       s.ReadTimeout,
+			UDPReadBufferSize: s.UDPReadBufferSize,
+			Parent:            s,
 		}
 
 	case strings.HasPrefix(s.Conf.Source, "srt://"):
@@ -126,8 +142,17 @@ func (s *Handler) Initialize() {
 	case strings.HasPrefix(s.Conf.Source, "whep://") ||
 		strings.HasPrefix(s.Conf.Source, "wheps://"):
 		s.instance = &sswebrtc.Source{
-			ReadTimeout: s.ReadTimeout,
-			Parent:      s,
+			ReadTimeout:       s.ReadTimeout,
+			UDPReadBufferSize: s.UDPReadBufferSize,
+			Parent:            s,
+		}
+
+	case strings.HasPrefix(s.Conf.Source, "udp+rtp://") ||
+		strings.HasPrefix(s.Conf.Source, "unix+rtp://"):
+		s.instance = &ssrtp.Source{
+			ReadTimeout:       s.ReadTimeout,
+			UDPReadBufferSize: s.UDPReadBufferSize,
+			Parent:            s,
 		}
 
 	case s.Conf.Source == "rpiCamera":
@@ -186,7 +211,7 @@ func (s *Handler) Stop(reason string) {
 }
 
 // Log implements logger.Writer.
-func (s *Handler) Log(level logger.Level, format string, args ...interface{}) {
+func (s *Handler) Log(level logger.Level, format string, args ...any) {
 	s.Parent.Log(level, format, args...)
 }
 

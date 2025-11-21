@@ -5,18 +5,27 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/abema/go-mp4"
+	amp4 "github.com/abema/go-mp4"
+	"github.com/google/uuid"
+
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4/seekablebuffer"
-
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/recordstore"
 )
 
-func writeInit(f io.Writer, tracks []*formatFMP4Track) error {
+func writeInit(
+	f io.Writer,
+	streamID uuid.UUID,
+	segmentNumber uint64,
+	dts time.Duration,
+	ntp time.Time,
+	tracks []*formatFMP4Track,
+) error {
 	fmp4Tracks := make([]*fmp4.InitTrack, len(tracks))
 	for i, track := range tracks {
 		fmp4Tracks[i] = track.initTrack
@@ -24,6 +33,17 @@ func writeInit(f io.Writer, tracks []*formatFMP4Track) error {
 
 	init := fmp4.Init{
 		Tracks: fmp4Tracks,
+		UserData: []amp4.IBox{
+			&recordstore.Mtxi{
+				FullBox: amp4.FullBox{
+					Version: 0,
+				},
+				StreamID:      streamID,
+				SegmentNumber: segmentNumber,
+				DTS:           int64(dts),
+				NTP:           ntp.UnixNano(),
+			},
+		},
 	}
 
 	var buf seekablebuffer.Buffer
@@ -79,8 +99,8 @@ func writeDuration(f io.ReadWriteSeeker, d time.Duration) error {
 		return err
 	}
 
-	var mvhd mp4.Mvhd
-	_, err = mp4.Unmarshal(f, uint64(moovSize-8), &mvhd, mp4.Context{})
+	var mvhd amp4.Mvhd
+	_, err = amp4.Unmarshal(f, uint64(moovSize-8), &mvhd, amp4.Context{})
 	if err != nil {
 		return err
 	}
@@ -92,7 +112,7 @@ func writeDuration(f io.ReadWriteSeeker, d time.Duration) error {
 		return err
 	}
 
-	_, err = mp4.Marshal(f, &mvhd, mp4.Context{})
+	_, err = amp4.Marshal(f, &mvhd, amp4.Context{})
 	if err != nil {
 		return err
 	}
@@ -104,12 +124,15 @@ type formatFMP4Segment struct {
 	f        *formatFMP4
 	startDTS time.Duration
 	startNTP time.Time
+	number   uint64
 
-	path    string
-	fi      *os.File
-	curPart *formatFMP4Part
-	endDTS  time.Duration
+	path           string
+	fi             *os.File
+	curPart        *formatFMP4Part
+	endDTS         time.Duration
+	nextPartNumber uint32
 
+	// berry's
 	csvFi *os.File
 }
 
@@ -121,7 +144,7 @@ func (s *formatFMP4Segment) close() error {
 	var err error
 
 	if s.curPart != nil {
-		err = s.curPart.close()
+		err = s.closeCurPart()
 	}
 
 	if s.fi != nil {
@@ -144,11 +167,47 @@ func (s *formatFMP4Segment) close() error {
 		}
 	}
 
+	// berry's
 	if s.csvFi != nil {
 		s.csvFi.Close()
 	}
 
 	return err
+}
+
+func (s *formatFMP4Segment) closeCurPart() error {
+	if s.fi == nil {
+		s.path = recordstore.Path{Start: s.startNTP}.Encode(s.f.ri.pathFormat2)
+		s.f.ri.Log(logger.Debug, "creating segment %s", s.path)
+
+		err := os.MkdirAll(filepath.Dir(s.path), 0o755)
+		if err != nil {
+			return err
+		}
+
+		fi, err := os.Create(s.path)
+		if err != nil {
+			return err
+		}
+
+		s.f.ri.onSegmentCreate(s.path)
+
+		err = writeInit(
+			fi,
+			s.f.ri.streamID,
+			s.number,
+			s.startDTS,
+			s.startNTP,
+			s.f.tracks)
+		if err != nil {
+			fi.Close()
+			return err
+		}
+
+		s.fi = fi
+	}
+
+	return s.curPart.close(s.fi)
 }
 
 func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *sample, dts time.Duration) error {
@@ -159,14 +218,15 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *sample, dts ti
 
 	if s.curPart == nil {
 		s.curPart = &formatFMP4Part{
-			s:              s,
-			sequenceNumber: s.f.nextSequenceNumber,
-			startDTS:       dts,
+			maxPartSize:     s.f.ri.maxPartSize,
+			segmentStartDTS: s.startDTS,
+			number:          s.nextPartNumber,
+			startDTS:        dts,
 		}
 		s.curPart.initialize()
-		s.f.nextSequenceNumber++
+		s.nextPartNumber++
 	} else if s.curPart.duration() >= s.f.ri.partDuration {
-		err := s.curPart.close()
+		err := s.closeCurPart()
 		s.curPart = nil
 
 		if err != nil {
@@ -174,14 +234,16 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *sample, dts ti
 		}
 
 		s.curPart = &formatFMP4Part{
-			s:              s,
-			sequenceNumber: s.f.nextSequenceNumber,
-			startDTS:       dts,
+			maxPartSize:     s.f.ri.maxPartSize,
+			segmentStartDTS: s.startDTS,
+			number:          s.nextPartNumber,
+			startDTS:        dts,
 		}
 		s.curPart.initialize()
-		s.f.nextSequenceNumber++
+		s.nextPartNumber++
 	}
 
+	// berry's
 	if track.initTrack.Codec.IsVideo() {
 		if s.f.ri.recordTimestampCSV && s.csvFi == nil {
 			path := recordstore.Path{Start: s.startNTP}.Encode(s.f.ri.pathFormat2)
@@ -195,7 +257,6 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *sample, dts ti
 			s.csvFi.WriteString(sample.ntp.UTC().Format("2006-01-02T15:04:05.000000Z,\n"))
 		}
 	}
-
 	if !track.initTrack.Codec.IsVideo() && !s.f.ri.recordAudio {
 		return nil
 	}

@@ -5,8 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/ice/v4"
@@ -22,26 +26,72 @@ const (
 	webrtcStreamID = "mediamtx"
 )
 
-func stringInSlice(a string, list []string) bool {
-	for _, b := range list {
-		if b == a {
-			return true
+func interfaceIPs(interfaceList []string) ([]string, error) {
+	intfs, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	var ips []string
+
+	for _, intf := range intfs {
+		if len(interfaceList) == 0 || slices.Contains(interfaceList, intf.Name) {
+			var addrs []net.Addr
+			addrs, err = intf.Addrs()
+			if err == nil {
+				for _, addr := range addrs {
+					var ip net.IP
+
+					switch v := addr.(type) {
+					case *net.IPNet:
+						ip = v.IP
+					case *net.IPAddr:
+						ip = v.IP
+					}
+
+					if ip != nil {
+						ips = append(ips, ip.String())
+					}
+				}
+			}
 		}
 	}
-	return false
+
+	return ips, nil
 }
 
-// skip ConfigureRTCPReports
-func registerInterceptors(mediaEngine *webrtc.MediaEngine, interceptorRegistry *interceptor.Registry) error {
-	if err := webrtc.ConfigureNack(mediaEngine, interceptorRegistry); err != nil {
+// * skip ConfigureRTCPReports
+// * add statsInterceptor
+func registerInterceptors(
+	mediaEngine *webrtc.MediaEngine,
+	interceptorRegistry *interceptor.Registry,
+	onStatsInterceptor func(s *statsInterceptor),
+) error {
+	err := webrtc.ConfigureNack(mediaEngine, interceptorRegistry)
+	if err != nil {
 		return err
 	}
 
-	if err := webrtc.ConfigureSimulcastExtensionHeaders(mediaEngine); err != nil {
+	err = webrtc.ConfigureSimulcastExtensionHeaders(mediaEngine)
+	if err != nil {
 		return err
 	}
 
-	return webrtc.ConfigureTWCCSender(mediaEngine, interceptorRegistry)
+	err = webrtc.ConfigureTWCCSender(mediaEngine, interceptorRegistry)
+	if err != nil {
+		return err
+	}
+
+	interceptorRegistry.Add(&statsInterceptorFactory{
+		onCreate: onStatsInterceptor,
+	})
+
+	return nil
+}
+
+func candidateLabel(c *webrtc.ICECandidate) string {
+	return c.Typ.String() + "/" + c.Protocol.String() + "/" +
+		c.Address + "/" + strconv.FormatInt(int64(c.Port), 10)
 }
 
 // TracksAreValid checks whether tracks in the SDP are valid
@@ -82,9 +132,10 @@ type trackRecvPair struct {
 
 // PeerConnection is a wrapper around webrtc.PeerConnection.
 type PeerConnection struct {
+	UDPReadBufferSize     uint
 	LocalRandomUDP        bool
 	ICEUDPMux             ice.UDPMux
-	ICETCPMux             ice.TCPMux
+	ICETCPMux             *TCPMuxWrapper
 	ICEServers            []webrtc.ICEServer
 	IPsFromInterfaces     bool
 	IPsFromInterfacesList []string
@@ -94,20 +145,23 @@ type PeerConnection struct {
 	STUNGatherTimeout     conf.Duration
 	Publish               bool
 	OutgoingTracks        []*OutgoingTrack
-	UseAbsoluteTimestamp  bool
 	Log                   logger.Writer
 
-	wr                *webrtc.PeerConnection
-	stateChangeMutex  sync.Mutex
+	wr               *webrtc.PeerConnection
+	ctx              context.Context
+	ctxCancel        context.CancelFunc
+	incomingTracks   []*IncomingTrack
+	startedReading   *int64
+	statsInterceptor *statsInterceptor
+
 	newLocalCandidate chan *webrtc.ICECandidateInit
+	incomingTrack     chan trackRecvPair
 	connected         chan struct{}
 	failed            chan struct{}
 	closed            chan struct{}
 	gatheringDone     chan struct{}
-	incomingTrack     chan trackRecvPair
-	ctx               context.Context
-	ctxCancel         context.CancelFunc
-	incomingTracks    []*IncomingTrack
+	done              chan struct{}
+	chStartReading    chan struct{}
 }
 
 // Start starts the peer connection.
@@ -116,32 +170,36 @@ func (co *PeerConnection) Start() error {
 
 	settingsEngine.SetIncludeLoopbackCandidate(true)
 
-	settingsEngine.SetInterfaceFilter(func(iface string) bool {
-		return co.IPsFromInterfaces && (len(co.IPsFromInterfacesList) == 0 ||
-			stringInSlice(iface, co.IPsFromInterfacesList))
-	})
-
-	settingsEngine.SetAdditionalHosts(co.AdditionalHosts)
-
-	// always enable all networks since we might be the client of a remote TCP listener
-	settingsEngine.SetNetworkTypes([]webrtc.NetworkType{
-		webrtc.NetworkTypeUDP4,
+	// always enable TCP since we might be the client of a remote TCP listener
+	networkTypes := []webrtc.NetworkType{
 		webrtc.NetworkTypeTCP4,
-	})
+		webrtc.NetworkTypeTCP6,
+	}
+
+	if co.LocalRandomUDP || co.ICEUDPMux != nil || len(co.ICEServers) != 0 {
+		networkTypes = append(networkTypes, webrtc.NetworkTypeUDP4, webrtc.NetworkTypeUDP6)
+	}
+
+	settingsEngine.SetNetworkTypes(networkTypes)
 
 	if co.ICEUDPMux != nil {
 		settingsEngine.SetICEUDPMux(co.ICEUDPMux)
 	}
 
 	if co.ICETCPMux != nil {
-		settingsEngine.SetICETCPMux(co.ICETCPMux)
-	}
-
-	if co.LocalRandomUDP {
-		settingsEngine.SetLocalRandomUDP(true)
+		settingsEngine.SetICETCPMux(co.ICETCPMux.Mux)
 	}
 
 	settingsEngine.SetSTUNGatherTimeout(time.Duration(co.STUNGatherTimeout))
+
+	webrtcNet := &webrtcNet{
+		udpReadBufferSize: int(co.UDPReadBufferSize),
+	}
+	err := webrtcNet.initialize()
+	if err != nil {
+		return err
+	}
+	settingsEngine.SetNet(webrtcNet)
 
 	mediaEngine := &webrtc.MediaEngine{}
 
@@ -175,7 +233,7 @@ func (co *PeerConnection) Start() error {
 				codecType = webrtc.RTPCodecTypeAudio
 			}
 
-			err := mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
+			err = mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
 				RTPCodecCapability: tr.Caps,
 				PayloadType:        webrtc.PayloadType(96 + i),
 			}, codecType)
@@ -187,7 +245,7 @@ func (co *PeerConnection) Start() error {
 		// When video is not used, a track must not be added but a codec has to present.
 		// Otherwise audio is muted on Firefox and Chrome.
 		if !videoSetupped {
-			err := mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
+			err = mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
 				RTPCodecCapability: webrtc.RTPCodecCapability{
 					MimeType:  webrtc.MimeTypeVP8,
 					ClockRate: 90000,
@@ -200,14 +258,14 @@ func (co *PeerConnection) Start() error {
 		}
 	} else {
 		for _, codec := range incomingVideoCodecs {
-			err := mediaEngine.RegisterCodec(codec, webrtc.RTPCodecTypeVideo)
+			err = mediaEngine.RegisterCodec(codec, webrtc.RTPCodecTypeVideo)
 			if err != nil {
 				return err
 			}
 		}
 
 		for _, codec := range incomingAudioCodecs {
-			err := mediaEngine.RegisterCodec(codec, webrtc.RTPCodecTypeAudio)
+			err = mediaEngine.RegisterCodec(codec, webrtc.RTPCodecTypeAudio)
 			if err != nil {
 				return err
 			}
@@ -216,7 +274,13 @@ func (co *PeerConnection) Start() error {
 
 	interceptorRegistry := &interceptor.Registry{}
 
-	err := registerInterceptors(mediaEngine, interceptorRegistry)
+	err = registerInterceptors(
+		mediaEngine,
+		interceptorRegistry,
+		func(s *statsInterceptor) {
+			co.statsInterceptor = s
+		},
+	)
 	if err != nil {
 		return err
 	}
@@ -233,14 +297,18 @@ func (co *PeerConnection) Start() error {
 		return err
 	}
 
+	co.ctx, co.ctxCancel = context.WithCancel(context.Background())
+
+	co.startedReading = new(int64)
+
 	co.newLocalCandidate = make(chan *webrtc.ICECandidateInit)
 	co.connected = make(chan struct{})
 	co.failed = make(chan struct{})
 	co.closed = make(chan struct{})
 	co.gatheringDone = make(chan struct{})
 	co.incomingTrack = make(chan trackRecvPair)
-
-	co.ctx, co.ctxCancel = context.WithCancel(context.Background())
+	co.done = make(chan struct{})
+	co.chStartReading = make(chan struct{})
 
 	if co.Publish {
 		for _, tr := range co.OutgoingTracks {
@@ -275,9 +343,11 @@ func (co *PeerConnection) Start() error {
 		})
 	}
 
+	var stateChangeMutex sync.Mutex
+
 	co.wr.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		co.stateChangeMutex.Lock()
-		defer co.stateChangeMutex.Unlock()
+		stateChangeMutex.Lock()
+		defer stateChangeMutex.Unlock()
 
 		select {
 		case <-co.closed:
@@ -334,41 +404,201 @@ func (co *PeerConnection) Start() error {
 		}
 	})
 
+	go co.run()
+
 	return nil
 }
 
 // Close closes the connection.
 func (co *PeerConnection) Close() {
-	for _, track := range co.incomingTracks {
-		track.close()
-	}
-	for _, track := range co.OutgoingTracks {
-		track.close()
-	}
-
 	co.ctxCancel()
-	co.wr.GracefulClose() //nolint:errcheck
+	<-co.done
+}
 
-	// even if GracefulClose() should wait for any goroutine to return,
-	// we have to wait for OnConnectionStateChange to return anyway,
-	// since it is executed in an uncontrolled goroutine.
-	// https://github.com/pion/webrtc/blob/4742d1fd54abbc3f81c3b56013654574ba7254f3/peerconnection.go#L509
-	<-co.closed
+func (co *PeerConnection) run() {
+	defer close(co.done)
+
+	defer func() {
+		for _, track := range co.incomingTracks {
+			track.close()
+		}
+		for _, track := range co.OutgoingTracks {
+			track.close()
+		}
+
+		co.wr.GracefulClose() //nolint:errcheck
+
+		// even if GracefulClose() should wait for any goroutine to return,
+		// we have to wait for OnConnectionStateChange to return anyway,
+		// since it is executed in an uncontrolled goroutine.
+		// https://github.com/pion/webrtc/blob/4742d1fd54abbc3f81c3b56013654574ba7254f3/peerconnection.go#L509
+		<-co.closed
+	}()
+
+	for {
+		select {
+		case <-co.chStartReading:
+			for _, track := range co.incomingTracks {
+				track.start()
+			}
+			atomic.StoreInt64(co.startedReading, 1)
+
+		case <-co.ctx.Done():
+			return
+		}
+	}
+}
+
+func (co *PeerConnection) removeUnwantedCandidates(firstMedia *sdp.MediaDescription) error {
+	var allowedIPs []string
+	if co.IPsFromInterfaces {
+		var err error
+		allowedIPs, err = interfaceIPs(co.IPsFromInterfacesList)
+		if err != nil {
+			return err
+		}
+	}
+
+	var newAttributes []sdp.Attribute //nolint:prealloc
+
+	for _, attr := range firstMedia.Attributes {
+		if attr.Key == "candidate" {
+			parts := strings.Split(attr.Value, " ")
+
+			// hide random UDP candidates
+			if !co.LocalRandomUDP && co.ICEUDPMux == nil && parts[2] == "udp" && parts[7] == "host" {
+				continue
+			}
+
+			// hide disallowed IPs
+			if parts[7] == "host" && !slices.Contains(allowedIPs, parts[4]) {
+				continue
+			}
+		}
+
+		newAttributes = append(newAttributes, attr)
+	}
+
+	firstMedia.Attributes = newAttributes
+
+	return nil
+}
+
+func (co *PeerConnection) addAdditionalCandidates(firstMedia *sdp.MediaDescription) error {
+	i := 0
+	for _, attr := range firstMedia.Attributes {
+		if attr.Key == "end-of-candidates" {
+			break
+		}
+		i++
+	}
+
+	for _, host := range co.AdditionalHosts {
+		var ips []string
+		if net.ParseIP(host) != nil {
+			ips = []string{host}
+		} else {
+			tmp, err := net.LookupIP(host)
+			if err != nil {
+				return err
+			}
+
+			ips = make([]string, len(tmp))
+			for i, e := range tmp {
+				ips[i] = e.String()
+			}
+		}
+
+		for _, ip := range ips {
+			newAttrs := append([]sdp.Attribute(nil), firstMedia.Attributes[:i]...)
+
+			if co.ICEUDPMux != nil {
+				port := strconv.FormatInt(int64(co.ICEUDPMux.GetListenAddresses()[0].(*net.UDPAddr).Port), 10)
+
+				tmp, err := randUint32()
+				if err != nil {
+					return err
+				}
+				id := strconv.FormatInt(int64(tmp), 10)
+
+				newAttrs = append(newAttrs, sdp.Attribute{
+					Key:   "candidate",
+					Value: id + " 1 udp 2130706431 " + ip + " " + port + " typ host",
+				})
+				newAttrs = append(newAttrs, sdp.Attribute{
+					Key:   "candidate",
+					Value: id + " 2 udp 2130706431 " + ip + " " + port + " typ host",
+				})
+			}
+
+			if co.ICETCPMux != nil {
+				port := strconv.FormatInt(int64(co.ICETCPMux.Ln.Addr().(*net.TCPAddr).Port), 10)
+
+				tmp, err := randUint32()
+				if err != nil {
+					return err
+				}
+				id := strconv.FormatInt(int64(tmp), 10)
+
+				newAttrs = append(newAttrs, sdp.Attribute{
+					Key:   "candidate",
+					Value: id + " 1 tcp 1671430143 " + ip + " " + port + " typ host tcptype passive",
+				})
+				newAttrs = append(newAttrs, sdp.Attribute{
+					Key:   "candidate",
+					Value: id + " 2 tcp 1671430143 " + ip + " " + port + " typ host tcptype passive",
+				})
+			}
+
+			newAttrs = append(newAttrs, firstMedia.Attributes[i:]...)
+			firstMedia.Attributes = newAttrs
+		}
+	}
+
+	return nil
+}
+
+func (co *PeerConnection) filterLocalDescription(desc *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+	var psdp sdp.SessionDescription
+	psdp.Unmarshal([]byte(desc.SDP)) //nolint:errcheck
+
+	firstMedia := psdp.MediaDescriptions[0]
+
+	err := co.removeUnwantedCandidates(firstMedia)
+	if err != nil {
+		return nil, err
+	}
+
+	err = co.addAdditionalCandidates(firstMedia)
+	if err != nil {
+		return nil, err
+	}
+
+	out, _ := psdp.Marshal()
+	desc.SDP = string(out)
+
+	return desc, nil
 }
 
 // CreatePartialOffer creates a partial offer.
 func (co *PeerConnection) CreatePartialOffer() (*webrtc.SessionDescription, error) {
-	offer, err := co.wr.CreateOffer(nil)
+	tmp, err := co.wr.CreateOffer(nil)
+	if err != nil {
+		return nil, err
+	}
+	offer := &tmp
+
+	err = co.wr.SetLocalDescription(*offer)
 	if err != nil {
 		return nil, err
 	}
 
-	err = co.wr.SetLocalDescription(offer)
+	offer, err = co.filterLocalDescription(offer)
 	if err != nil {
 		return nil, err
 	}
 
-	return &offer, nil
+	return offer, nil
 }
 
 // SetAnswer sets the answer.
@@ -382,52 +612,55 @@ func (co *PeerConnection) AddRemoteCandidate(candidate *webrtc.ICECandidateInit)
 }
 
 // CreateFullAnswer creates a full answer.
-func (co *PeerConnection) CreateFullAnswer(
-	ctx context.Context,
-	offer *webrtc.SessionDescription,
-) (*webrtc.SessionDescription, error) {
+func (co *PeerConnection) CreateFullAnswer(offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
 	err := co.wr.SetRemoteDescription(*offer)
 	if err != nil {
 		return nil, err
 	}
 
-	answer, err := co.wr.CreateAnswer(nil)
+	tmp, err := co.wr.CreateAnswer(nil)
 	if err != nil {
 		if errors.Is(err, webrtc.ErrSenderWithNoCodecs) {
 			return nil, fmt.Errorf("codecs not supported by client")
 		}
 		return nil, err
 	}
+	answer := &tmp
 
-	err = co.wr.SetLocalDescription(answer)
+	err = co.wr.SetLocalDescription(*answer)
 	if err != nil {
 		return nil, err
 	}
 
-	err = co.waitGatheringDone(ctx)
+	err = co.waitGatheringDone()
 	if err != nil {
 		return nil, err
 	}
 
-	return co.wr.LocalDescription(), nil
+	answer = co.wr.LocalDescription()
+
+	answer, err = co.filterLocalDescription(answer)
+	if err != nil {
+		return nil, err
+	}
+
+	return answer, nil
 }
 
-func (co *PeerConnection) waitGatheringDone(ctx context.Context) error {
+func (co *PeerConnection) waitGatheringDone() error {
 	for {
 		select {
 		case <-co.NewLocalCandidate():
 		case <-co.GatheringDone():
 			return nil
-		case <-ctx.Done():
+		case <-co.ctx.Done():
 			return fmt.Errorf("terminated")
 		}
 	}
 }
 
 // WaitUntilConnected waits until connection is established.
-func (co *PeerConnection) WaitUntilConnected(
-	ctx context.Context,
-) error {
+func (co *PeerConnection) WaitUntilConnected() error {
 	t := time.NewTimer(time.Duration(co.HandshakeTimeout))
 	defer t.Stop()
 
@@ -440,7 +673,7 @@ outer:
 		case <-co.connected:
 			break outer
 
-		case <-ctx.Done():
+		case <-co.ctx.Done():
 			return fmt.Errorf("terminated")
 		}
 	}
@@ -449,7 +682,7 @@ outer:
 }
 
 // GatherIncomingTracks gathers incoming tracks.
-func (co *PeerConnection) GatherIncomingTracks(ctx context.Context) error {
+func (co *PeerConnection) GatherIncomingTracks() error {
 	var sdp sdp.SessionDescription
 	sdp.Unmarshal([]byte(co.wr.RemoteDescription().SDP)) //nolint:errcheck
 
@@ -468,11 +701,10 @@ func (co *PeerConnection) GatherIncomingTracks(ctx context.Context) error {
 
 		case pair := <-co.incomingTrack:
 			t := &IncomingTrack{
-				useAbsoluteTimestamp: co.UseAbsoluteTimestamp,
-				track:                pair.track,
-				receiver:             pair.receiver,
-				writeRTCP:            co.wr.WriteRTCP,
-				log:                  co.Log,
+				track:     pair.track,
+				receiver:  pair.receiver,
+				writeRTCP: co.wr.WriteRTCP,
+				log:       co.Log,
 			}
 			t.initialize()
 			co.incomingTracks = append(co.incomingTracks, t)
@@ -484,7 +716,7 @@ func (co *PeerConnection) GatherIncomingTracks(ctx context.Context) error {
 		case <-co.Failed():
 			return fmt.Errorf("peer connection closed")
 
-		case <-ctx.Done():
+		case <-co.ctx.Done():
 			return fmt.Errorf("terminated")
 		}
 	}
@@ -510,82 +742,102 @@ func (co *PeerConnection) GatheringDone() <-chan struct{} {
 	return co.gatheringDone
 }
 
-// LocalCandidate returns the local candidate.
-func (co *PeerConnection) LocalCandidate() string {
-	var cid string
-	for _, stats := range co.wr.GetStats() {
-		if tstats, ok := stats.(webrtc.ICECandidatePairStats); ok && tstats.Nominated {
-			cid = tstats.LocalCandidateID
-			break
-		}
-	}
-
-	if cid != "" {
-		for _, stats := range co.wr.GetStats() {
-			if tstats, ok := stats.(webrtc.ICECandidateStats); ok && tstats.ID == cid {
-				return tstats.CandidateType.String() + "/" + tstats.Protocol + "/" +
-					tstats.IP + "/" + strconv.FormatInt(int64(tstats.Port), 10)
-			}
-		}
-	}
-
-	return ""
-}
-
 // IncomingTracks returns incoming tracks.
 func (co *PeerConnection) IncomingTracks() []*IncomingTrack {
 	return co.incomingTracks
 }
 
-// StartReading starts reading all incoming tracks.
+// StartReading starts reading incoming tracks.
 func (co *PeerConnection) StartReading() {
-	for _, track := range co.incomingTracks {
-		track.start()
+	select {
+	case co.chStartReading <- struct{}{}:
+	case <-co.ctx.Done():
 	}
+}
+
+// LocalCandidate returns the local candidate.
+func (co *PeerConnection) LocalCandidate() string {
+	receivers := co.wr.GetReceivers()
+	if len(receivers) < 1 {
+		return ""
+	}
+
+	cp, err := receivers[0].Transport().ICETransport().GetSelectedCandidatePair()
+	if err != nil || cp == nil {
+		return ""
+	}
+
+	return candidateLabel(cp.Local)
 }
 
 // RemoteCandidate returns the remote candidate.
 func (co *PeerConnection) RemoteCandidate() string {
-	var cid string
-	for _, stats := range co.wr.GetStats() {
-		if tstats, ok := stats.(webrtc.ICECandidatePairStats); ok && tstats.Nominated {
-			cid = tstats.RemoteCandidateID
-			break
-		}
+	receivers := co.wr.GetReceivers()
+	if len(receivers) < 1 {
+		return ""
 	}
 
-	if cid != "" {
-		for _, stats := range co.wr.GetStats() {
-			if tstats, ok := stats.(webrtc.ICECandidateStats); ok && tstats.ID == cid {
-				return tstats.CandidateType.String() + "/" + tstats.Protocol + "/" +
-					tstats.IP + "/" + strconv.FormatInt(int64(tstats.Port), 10)
-			}
-		}
+	cp, err := receivers[0].Transport().ICETransport().GetSelectedCandidatePair()
+	if err != nil || cp == nil {
+		return ""
 	}
 
-	return ""
+	return candidateLabel(cp.Remote)
 }
 
-// BytesReceived returns received bytes.
-func (co *PeerConnection) BytesReceived() uint64 {
-	for _, stats := range co.wr.GetStats() {
+func bytesStats(wr *webrtc.PeerConnection) (uint64, uint64) {
+	for _, stats := range wr.GetStats() {
 		if tstats, ok := stats.(webrtc.TransportStats); ok {
 			if tstats.ID == "iceTransport" {
-				return tstats.BytesReceived
+				return tstats.BytesReceived, tstats.BytesSent
 			}
 		}
 	}
-	return 0
+	return 0, 0
 }
 
-// BytesSent returns sent bytes.
-func (co *PeerConnection) BytesSent() uint64 {
-	for _, stats := range co.wr.GetStats() {
-		if tstats, ok := stats.(webrtc.TransportStats); ok {
-			if tstats.ID == "iceTransport" {
-				return tstats.BytesSent
+// Stats returns statistics.
+func (co *PeerConnection) Stats() *Stats {
+	bytesReceived, bytesSent := bytesStats(co.wr)
+
+	v := float64(0)
+	n := float64(0)
+	packetsReceived := uint64(0)
+	packetsSent := uint64(0)
+	packetsLost := uint64(0)
+
+	if atomic.LoadInt64(co.startedReading) == 1 {
+		for _, tr := range co.incomingTracks {
+			if recvStats := tr.rtpReceiver.Stats(); recvStats != nil {
+				v += recvStats.Jitter
+				n++
+				packetsReceived += recvStats.TotalReceived
+				packetsLost += recvStats.TotalLost
 			}
 		}
 	}
-	return 0
+
+	for _, tr := range co.OutgoingTracks {
+		if sentStats := tr.rtcpSender.Stats(); sentStats != nil {
+			packetsSent += sentStats.TotalSent
+		}
+	}
+
+	var rtpPacketsJitter float64
+	if n != 0 {
+		rtpPacketsJitter = v / n
+	} else {
+		rtpPacketsJitter = 0
+	}
+
+	return &Stats{
+		BytesReceived:       bytesReceived,
+		BytesSent:           bytesSent,
+		RTPPacketsReceived:  packetsReceived,
+		RTPPacketsSent:      packetsSent,
+		RTPPacketsLost:      packetsLost,
+		RTPPacketsJitter:    rtpPacketsJitter,
+		RTCPPacketsReceived: atomic.LoadUint64(co.statsInterceptor.rtcpPacketsReceived),
+		RTCPPacketsSent:     atomic.LoadUint64(co.statsInterceptor.rtcpPacketsSent),
+	}
 }

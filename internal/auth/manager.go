@@ -27,33 +27,6 @@ const (
 	jwksRefreshPeriod = 60 * 60 * time.Second
 )
 
-func isHTTPRequest(r *Request) bool {
-	switch r.Action {
-	case conf.AuthActionPlayback, conf.AuthActionAPI,
-		conf.AuthActionMetrics, conf.AuthActionPprof:
-		return true
-	}
-
-	switch r.Protocol {
-	case ProtocolHLS, ProtocolWebRTC:
-		return true
-	}
-
-	return false
-}
-
-// Error is a authentication error.
-type Error struct {
-	Wrapped        error
-	Message        string
-	AskCredentials bool
-}
-
-// Error implements the error interface.
-func (e Error) Error() string {
-	return "authentication failed: " + e.Wrapped.Error()
-}
-
 func matchesPermission(perms []conf.AuthInternalUserPermission, req *Request) bool {
 	for _, perm := range perms {
 		if perm.Action == req.Action {
@@ -108,7 +81,7 @@ func (m *Manager) ReloadInternalUsers(u []conf.AuthInternalUser) {
 }
 
 // Authenticate authenticates a request.
-func (m *Manager) Authenticate(req *Request) error {
+func (m *Manager) Authenticate(req *Request) *Error {
 	var err error
 
 	switch m.Method {
@@ -123,9 +96,9 @@ func (m *Manager) Authenticate(req *Request) error {
 	}
 
 	if err != nil {
-		return Error{
+		return &Error{
 			Wrapped:        err,
-			AskCredentials: m.Method != conf.AuthMethodJWT && req.Credentials.User == "" && req.Credentials.Pass == "",
+			AskCredentials: (req.Credentials.User == "" && req.Credentials.Pass == "" && req.Credentials.Token == ""),
 		}
 	}
 
@@ -206,7 +179,7 @@ func (m *Manager) authenticateHTTP(req *Request) error {
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode > 299 {
-		if resBody, err := io.ReadAll(res.Body); err == nil && len(resBody) != 0 {
+		if resBody, err2 := io.ReadAll(res.Body); err2 == nil && len(resBody) != 0 {
 			return fmt.Errorf("server replied with code %d: %s", res.StatusCode, string(resBody))
 		}
 
@@ -235,7 +208,7 @@ func (m *Manager) authenticateJWT(req *Request) error {
 	case req.Credentials.Pass != "":
 		encodedJWT = req.Credentials.Pass
 
-	case (!isHTTPRequest(req) || m.JWTInHTTPQuery):
+	case m.JWTInHTTPQuery:
 		var v url.Values
 		v, err = url.ParseQuery(req.Query)
 		if err != nil {
@@ -273,8 +246,13 @@ func (m *Manager) pullJWTJWKS() (jwt.Keyfunc, error) {
 	defer m.mutex.Unlock()
 
 	if now.Sub(m.jwksLastRefresh) >= jwksRefreshPeriod {
+		u, err := url.Parse(m.JWTJWKS)
+		if err != nil {
+			return nil, err
+		}
+
 		tr := &http.Transport{
-			TLSClientConfig: tls.ConfigForFingerprint(m.JWTJWKSFingerprint),
+			TLSClientConfig: tls.MakeConfig(u.Hostname(), m.JWTJWKSFingerprint),
 		}
 		defer tr.CloseIdleConnections()
 

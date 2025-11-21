@@ -1,18 +1,21 @@
 package rtsp
 
 import (
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4"
-	rtspauth "github.com/bluenviron/gortsplib/v4/pkg/auth"
-	"github.com/bluenviron/gortsplib/v4/pkg/base"
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	"github.com/bluenviron/gortsplib/v4/pkg/format"
+	"github.com/bluenviron/gortsplib/v5"
+	rtspauth "github.com/bluenviron/gortsplib/v5/pkg/auth"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediamtx/internal/auth"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
+	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/stream"
 	"github.com/bluenviron/mediamtx/internal/test"
 	"github.com/bluenviron/mediamtx/internal/unit"
@@ -20,10 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type dummyPath struct {
-	stream        *stream.Stream
-	streamCreated chan struct{}
-}
+type dummyPath struct{}
 
 func (p *dummyPath) Name() string {
 	return "teststream"
@@ -37,26 +37,6 @@ func (p *dummyPath) ExternalCmdEnv() externalcmd.Environment {
 	return externalcmd.Environment{}
 }
 
-func (p *dummyPath) StartPublisher(req defs.PathStartPublisherReq) (*stream.Stream, error) {
-	p.stream = &stream.Stream{
-		WriteQueueSize:     512,
-		RTPMaxPayloadSize:  1450,
-		Desc:               req.Desc,
-		GenerateRTPPackets: true,
-		Parent:             test.NilLogger,
-	}
-	err := p.stream.Initialize()
-	if err != nil {
-		return nil, err
-	}
-
-	close(p.streamCreated)
-	return p.stream, nil
-}
-
-func (p *dummyPath) StopPublisher(_ defs.PathStopPublisherReq) {
-}
-
 func (p *dummyPath) RemovePublisher(_ defs.PathRemovePublisherReq) {
 }
 
@@ -66,20 +46,22 @@ func (p *dummyPath) RemoveReader(_ defs.PathRemoveReaderReq) {
 func TestServerPublish(t *testing.T) {
 	for _, ca := range []string{"basic", "digest", "basic+digest"} {
 		t.Run(ca, func(t *testing.T) {
-			path := &dummyPath{
-				streamCreated: make(chan struct{}),
-			}
-
+			var strm *stream.Stream
+			streamCreated := make(chan struct{})
 			n := 0
 
 			pathManager := &test.PathManager{
-				AddPublisherImpl: func(req defs.PathAddPublisherReq) (defs.Path, error) {
+				FindPathConfImpl: func(req defs.PathFindPathConfReq) (*conf.Path, error) {
+					require.Equal(t, "teststream", req.AccessRequest.Name)
+					require.Equal(t, "param=value", req.AccessRequest.Query)
+
 					if ca == "basic" {
+						require.Nil(t, req.AccessRequest.CustomVerifyFunc)
+
 						if req.AccessRequest.Credentials.User == "" && req.AccessRequest.Credentials.Pass == "" {
-							return nil, auth.Error{Message: "", AskCredentials: true}
+							return nil, &auth.Error{AskCredentials: true}
 						}
-						require.Equal(t, "teststream", req.AccessRequest.Name)
-						require.Equal(t, "param=value", req.AccessRequest.Query)
+
 						require.Equal(t, "myuser", req.AccessRequest.Credentials.User)
 						require.Equal(t, "mypass", req.AccessRequest.Credentials.Pass)
 					} else {
@@ -87,11 +69,31 @@ func TestServerPublish(t *testing.T) {
 						if n == 0 {
 							require.False(t, ok)
 							n++
-							return nil, auth.Error{Message: "", AskCredentials: true}
+							return nil, &auth.Error{AskCredentials: true}
 						}
 						require.True(t, ok)
 					}
-					return path, nil
+
+					return &conf.Path{}, nil
+				},
+				AddPublisherImpl: func(req defs.PathAddPublisherReq) (defs.Path, *stream.Stream, error) {
+					require.Equal(t, "teststream", req.AccessRequest.Name)
+					require.Equal(t, "param=value", req.AccessRequest.Query)
+					require.True(t, req.AccessRequest.SkipAuth)
+
+					strm = &stream.Stream{
+						WriteQueueSize:     512,
+						RTPMaxPayloadSize:  1450,
+						Desc:               req.Desc,
+						GenerateRTPPackets: true,
+						Parent:             test.NilLogger,
+					}
+					err := strm.Initialize()
+					require.NoError(t, err)
+
+					close(streamCreated)
+
+					return &dummyPath{}, strm, nil
 				},
 			}
 
@@ -111,7 +113,7 @@ func TestServerPublish(t *testing.T) {
 				ReadTimeout:    conf.Duration(10 * time.Second),
 				WriteTimeout:   conf.Duration(10 * time.Second),
 				WriteQueueSize: 512,
-				Transports:     conf.RTSPTransports{gortsplib.TransportTCP: {}},
+				Transports:     conf.RTSPTransports{gortsplib.ProtocolTCP: {}},
 				PathManager:    pathManager,
 				Parent:         test.NilLogger,
 			}
@@ -129,28 +131,27 @@ func TestServerPublish(t *testing.T) {
 			require.NoError(t, err)
 			defer source.Close()
 
-			<-path.streamCreated
+			<-streamCreated
 
-			reader := test.NilLogger
+			r := &stream.Reader{Parent: test.NilLogger}
 
 			recv := make(chan struct{})
 
-			path.stream.AddReader(
-				reader,
-				path.stream.Desc.Medias[0],
-				path.stream.Desc.Medias[0].Formats[0],
-				func(u unit.Unit) error {
-					require.Equal(t, [][]byte{
+			r.OnData(
+				strm.Desc.Medias[0],
+				strm.Desc.Medias[0].Formats[0],
+				func(u *unit.Unit) error {
+					require.Equal(t, unit.PayloadH264{
 						test.FormatH264.SPS,
 						test.FormatH264.PPS,
 						{5, 2, 3, 4},
-					}, u.(*unit.H264).AU)
+					}, u.Payload)
 					close(recv)
 					return nil
 				})
 
-			path.stream.StartReader(reader)
-			defer path.stream.RemoveReader(reader)
+			strm.AddReader(r)
+			defer strm.RemoveReader(r)
 
 			err = source.WritePacketRTP(media0, &rtp.Packet{
 				Header: rtp.Header{
@@ -185,17 +186,20 @@ func TestServerRead(t *testing.T) {
 			err := strm.Initialize()
 			require.NoError(t, err)
 
-			path := &dummyPath{stream: strm}
 			n := 0
 
 			pathManager := &test.PathManager{
 				DescribeImpl: func(req defs.PathDescribeReq) defs.PathDescribeRes {
+					require.Equal(t, "teststream", req.AccessRequest.Name)
+					require.Equal(t, "param=value", req.AccessRequest.Query)
+
 					if ca == "basic" {
+						require.Nil(t, req.AccessRequest.CustomVerifyFunc)
+
 						if req.AccessRequest.Credentials.User == "" && req.AccessRequest.Credentials.Pass == "" {
-							return defs.PathDescribeRes{Err: auth.Error{Message: "", AskCredentials: true}}
+							return defs.PathDescribeRes{Err: &auth.Error{AskCredentials: true}}
 						}
-						require.Equal(t, "teststream", req.AccessRequest.Name)
-						require.Equal(t, "param=value", req.AccessRequest.Query)
+
 						require.Equal(t, "myuser", req.AccessRequest.Credentials.User)
 						require.Equal(t, "mypass", req.AccessRequest.Credentials.Pass)
 					} else {
@@ -203,21 +207,23 @@ func TestServerRead(t *testing.T) {
 						if n == 0 {
 							require.False(t, ok)
 							n++
-							return defs.PathDescribeRes{Err: auth.Error{Message: "", AskCredentials: true}}
+							return defs.PathDescribeRes{Err: &auth.Error{AskCredentials: true}}
 						}
 						require.True(t, ok)
 					}
 
 					return defs.PathDescribeRes{
-						Path:   path,
-						Stream: path.stream,
+						Path:   &dummyPath{},
+						Stream: strm,
 						Err:    nil,
 					}
 				},
 				AddReaderImpl: func(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error) {
+					require.Equal(t, "teststream", req.AccessRequest.Name)
+					require.Equal(t, "param=value", req.AccessRequest.Query)
+
 					if ca == "basic" {
-						require.Equal(t, "teststream", req.AccessRequest.Name)
-						require.Equal(t, "param=value", req.AccessRequest.Query)
+						require.Nil(t, req.AccessRequest.CustomVerifyFunc)
 						require.Equal(t, "myuser", req.AccessRequest.Credentials.User)
 						require.Equal(t, "mypass", req.AccessRequest.Credentials.Pass)
 					} else {
@@ -225,7 +231,7 @@ func TestServerRead(t *testing.T) {
 						require.True(t, ok)
 					}
 
-					return path, path.stream, nil
+					return &dummyPath{}, strm, nil
 				},
 			}
 
@@ -245,7 +251,7 @@ func TestServerRead(t *testing.T) {
 				ReadTimeout:    conf.Duration(10 * time.Second),
 				WriteTimeout:   conf.Duration(10 * time.Second),
 				WriteQueueSize: 512,
-				Transports:     conf.RTSPTransports{gortsplib.TransportTCP: {}},
+				Transports:     conf.RTSPTransports{gortsplib.ProtocolTCP: {}},
 				PathManager:    pathManager,
 				Parent:         test.NilLogger,
 			}
@@ -261,7 +267,7 @@ func TestServerRead(t *testing.T) {
 				Host:   u.Host,
 			}
 
-			err = reader.Start2()
+			err = reader.Start()
 			require.NoError(t, err)
 			defer reader.Close()
 
@@ -282,7 +288,6 @@ func TestServerRead(t *testing.T) {
 						SequenceNumber: p.SequenceNumber,
 						Timestamp:      p.Timestamp,
 						SSRC:           p.SSRC,
-						CSRC:           []uint32{},
 					},
 					Payload: []byte{
 						0x18, 0x00, 0x19, 0x67, 0x42, 0xc0, 0x28, 0xd9,
@@ -298,11 +303,9 @@ func TestServerRead(t *testing.T) {
 			_, err = reader.Play(nil)
 			require.NoError(t, err)
 
-			strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-				Base: unit.Base{
-					NTP: time.Time{},
-				},
-				AU: [][]byte{
+			strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+				NTP: time.Time{},
+				Payload: unit.PayloadH264{
 					{5, 2, 3, 4}, // IDR
 				},
 			})
@@ -327,8 +330,6 @@ func TestServerRedirect(t *testing.T) {
 			err := strm.Initialize()
 			require.NoError(t, err)
 
-			path := &dummyPath{stream: strm}
-
 			pathManager := &test.PathManager{
 				DescribeImpl: func(req defs.PathDescribeReq) defs.PathDescribeRes {
 					if req.AccessRequest.Name == "path1" {
@@ -343,7 +344,7 @@ func TestServerRedirect(t *testing.T) {
 					}
 
 					if req.AccessRequest.Credentials.User == "" && req.AccessRequest.Credentials.Pass == "" {
-						return defs.PathDescribeRes{Err: auth.Error{Message: "", AskCredentials: true}}
+						return defs.PathDescribeRes{Err: &auth.Error{AskCredentials: true}}
 					}
 
 					require.Equal(t, "path2", req.AccessRequest.Name)
@@ -352,9 +353,8 @@ func TestServerRedirect(t *testing.T) {
 					require.Equal(t, "mypass", req.AccessRequest.Credentials.Pass)
 
 					return defs.PathDescribeRes{
-						Path:   path,
-						Stream: path.stream,
-						Err:    nil,
+						Path:   &dummyPath{},
+						Stream: strm,
 					}
 				},
 			}
@@ -365,7 +365,7 @@ func TestServerRedirect(t *testing.T) {
 				ReadTimeout:    conf.Duration(10 * time.Second),
 				WriteTimeout:   conf.Duration(10 * time.Second),
 				WriteQueueSize: 512,
-				Transports:     conf.RTSPTransports{gortsplib.TransportTCP: {}},
+				Transports:     conf.RTSPTransports{gortsplib.ProtocolTCP: {}},
 				PathManager:    pathManager,
 				Parent:         test.NilLogger,
 			}
@@ -381,7 +381,7 @@ func TestServerRedirect(t *testing.T) {
 				Host:   u.Host,
 			}
 
-			err = reader.Start2()
+			err = reader.Start()
 			require.NoError(t, err)
 			defer reader.Close()
 
@@ -391,4 +391,55 @@ func TestServerRedirect(t *testing.T) {
 			require.Equal(t, desc.Medias[0].Formats, desc2.Medias[0].Formats)
 		})
 	}
+}
+
+func TestAuthError(t *testing.T) {
+	pathManager := &test.PathManager{
+		DescribeImpl: func(req defs.PathDescribeReq) defs.PathDescribeRes {
+			if req.AccessRequest.Credentials.User == "" && req.AccessRequest.Credentials.Pass == "" {
+				return defs.PathDescribeRes{Err: &auth.Error{AskCredentials: true}}
+			}
+
+			return defs.PathDescribeRes{Err: &auth.Error{Wrapped: fmt.Errorf("auth error")}}
+		},
+	}
+
+	n := new(int64)
+	done := make(chan struct{})
+
+	s := &Server{
+		Address:        "127.0.0.1:8557",
+		ReadTimeout:    conf.Duration(10 * time.Second),
+		WriteTimeout:   conf.Duration(10 * time.Second),
+		WriteQueueSize: 512,
+		PathManager:    pathManager,
+		Parent: test.Logger(func(l logger.Level, s string, i ...any) {
+			if l == logger.Info {
+				if atomic.AddInt64(n, 1) == 3 {
+					require.Regexp(t, "authentication failed: auth error$", fmt.Sprintf(s, i...))
+					close(done)
+				}
+			}
+		}),
+	}
+	err := s.Initialize()
+	require.NoError(t, err)
+	defer s.Close()
+
+	u, err := base.ParseURL("rtsp://myuser:mypass@127.0.0.1:8557/teststream?param=value")
+	require.NoError(t, err)
+
+	reader := gortsplib.Client{
+		Scheme: u.Scheme,
+		Host:   u.Host,
+	}
+
+	err = reader.Start()
+	require.NoError(t, err)
+	defer reader.Close()
+
+	_, _, err = reader.Describe(u)
+	require.EqualError(t, err, "bad status code: 401 (Unauthorized)")
+
+	<-done
 }

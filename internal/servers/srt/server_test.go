@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
@@ -17,10 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type dummyPath struct {
-	stream        *stream.Stream
-	streamCreated chan struct{}
-}
+type dummyPath struct{}
 
 func (p *dummyPath) Name() string {
 	return "teststream"
@@ -34,26 +31,6 @@ func (p *dummyPath) ExternalCmdEnv() externalcmd.Environment {
 	return externalcmd.Environment{}
 }
 
-func (p *dummyPath) StartPublisher(req defs.PathStartPublisherReq) (*stream.Stream, error) {
-	p.stream = &stream.Stream{
-		WriteQueueSize:     512,
-		RTPMaxPayloadSize:  1450,
-		Desc:               req.Desc,
-		GenerateRTPPackets: true,
-		Parent:             test.NilLogger,
-	}
-	err := p.stream.Initialize()
-	if err != nil {
-		return nil, err
-	}
-
-	close(p.streamCreated)
-	return p.stream, nil
-}
-
-func (p *dummyPath) StopPublisher(_ defs.PathStopPublisherReq) {
-}
-
 func (p *dummyPath) RemovePublisher(_ defs.PathRemovePublisherReq) {
 }
 
@@ -65,17 +42,35 @@ func TestServerPublish(t *testing.T) {
 	externalCmdPool.Initialize()
 	defer externalCmdPool.Close()
 
-	path := &dummyPath{
-		streamCreated: make(chan struct{}),
-	}
+	var strm *stream.Stream
+	streamCreated := make(chan struct{})
 
 	pathManager := &test.PathManager{
-		AddPublisherImpl: func(req defs.PathAddPublisherReq) (defs.Path, error) {
+		FindPathConfImpl: func(req defs.PathFindPathConfReq) (*conf.Path, error) {
 			require.Equal(t, "teststream", req.AccessRequest.Name)
 			require.Equal(t, "param=value", req.AccessRequest.Query)
 			require.Equal(t, "myuser", req.AccessRequest.Credentials.User)
 			require.Equal(t, "mypass", req.AccessRequest.Credentials.Pass)
-			return path, nil
+			return &conf.Path{}, nil
+		},
+		AddPublisherImpl: func(req defs.PathAddPublisherReq) (defs.Path, *stream.Stream, error) {
+			require.Equal(t, "teststream", req.AccessRequest.Name)
+			require.Equal(t, "param=value", req.AccessRequest.Query)
+			require.True(t, req.AccessRequest.SkipAuth)
+
+			strm = &stream.Stream{
+				WriteQueueSize:     512,
+				RTPMaxPayloadSize:  1450,
+				Desc:               req.Desc,
+				GenerateRTPPackets: true,
+				Parent:             test.NilLogger,
+			}
+			err := strm.Initialize()
+			require.NoError(t, err)
+
+			close(streamCreated)
+
+			return &dummyPath{}, strm, nil
 		},
 	}
 
@@ -128,28 +123,27 @@ func TestServerPublish(t *testing.T) {
 	err = bw.Flush()
 	require.NoError(t, err)
 
-	<-path.streamCreated
+	<-streamCreated
 
-	reader := test.NilLogger
+	r := &stream.Reader{Parent: test.NilLogger}
 
 	recv := make(chan struct{})
 
-	path.stream.AddReader(
-		reader,
-		path.stream.Desc.Medias[0],
-		path.stream.Desc.Medias[0].Formats[0],
-		func(u unit.Unit) error {
-			require.Equal(t, [][]byte{
+	r.OnData(
+		strm.Desc.Medias[0],
+		strm.Desc.Medias[0].Formats[0],
+		func(u *unit.Unit) error {
+			require.Equal(t, unit.PayloadH264{
 				test.FormatH264.SPS,
 				test.FormatH264.PPS,
 				{0x05, 1}, // IDR
-			}, u.(*unit.H264).AU)
+			}, u.Payload)
 			close(recv)
 			return nil
 		})
 
-	path.stream.StartReader(reader)
-	defer path.stream.RemoveReader(reader)
+	strm.AddReader(r)
+	defer strm.RemoveReader(r)
 
 	err = w.WriteH264(track, 0, 0, [][]byte{
 		{5, 2},
@@ -179,15 +173,13 @@ func TestServerRead(t *testing.T) {
 	err := strm.Initialize()
 	require.NoError(t, err)
 
-	path := &dummyPath{stream: strm}
-
 	pathManager := &test.PathManager{
 		AddReaderImpl: func(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error) {
 			require.Equal(t, "teststream", req.AccessRequest.Name)
 			require.Equal(t, "param=value", req.AccessRequest.Query)
 			require.Equal(t, "myuser", req.AccessRequest.Credentials.User)
 			require.Equal(t, "mypass", req.AccessRequest.Credentials.Pass)
-			return path, path.stream, nil
+			return &dummyPath{}, strm, nil
 		},
 	}
 
@@ -221,13 +213,11 @@ func TestServerRead(t *testing.T) {
 	require.NoError(t, err)
 	defer reader.Close()
 
-	strm.WaitRunningReader()
+	time.Sleep(500 * time.Millisecond)
 
-	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-		Base: unit.Base{
-			NTP: time.Time{},
-		},
-		AU: [][]byte{
+	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+		NTP: time.Time{},
+		Payload: unit.PayloadH264{
 			{5, 1}, // IDR
 		},
 	})
@@ -255,11 +245,9 @@ func TestServerRead(t *testing.T) {
 		return nil
 	})
 
-	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-		Base: unit.Base{
-			NTP: time.Time{},
-		},
-		AU: [][]byte{
+	strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+		NTP: time.Time{},
+		Payload: unit.PayloadH264{
 			{5, 2},
 		},
 	})

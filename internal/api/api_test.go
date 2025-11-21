@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -18,9 +19,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type testParent struct{}
+type testParent struct {
+	log func(_ logger.Level, _ string, _ ...any)
+}
 
-func (testParent) Log(_ logger.Level, _ string, _ ...interface{}) {
+func (p testParent) Log(l logger.Level, s string, a ...any) {
+	if p.log != nil {
+		p.log(l, s, a...)
+	}
 }
 
 func (testParent) APIConfigSet(_ *conf.Conf) {}
@@ -36,7 +42,7 @@ func tempConf(t *testing.T, cnt string) *conf.Conf {
 	return cnf
 }
 
-func httpRequest(t *testing.T, hc *http.Client, method string, ur string, in interface{}, out interface{}) {
+func httpRequest(t *testing.T, hc *http.Client, method string, ur string, in any, out any) {
 	buf := func() io.Reader {
 		if in == nil {
 			return nil
@@ -68,19 +74,20 @@ func httpRequest(t *testing.T, hc *http.Client, method string, ur string, in int
 }
 
 func checkError(t *testing.T, msg string, body io.Reader) {
-	var resErr map[string]interface{}
+	var resErr map[string]any
 	err := json.NewDecoder(body).Decode(&resErr)
 	require.NoError(t, err)
-	require.Equal(t, map[string]interface{}{"error": msg}, resErr)
+	require.Equal(t, map[string]any{"error": msg}, resErr)
 }
 
 func TestPreflightRequest(t *testing.T) {
 	api := API{
-		Address:     "localhost:9997",
-		AllowOrigin: "*",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		AllowOrigins: []string{"*"},
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
@@ -111,15 +118,18 @@ func TestPreflightRequest(t *testing.T) {
 	require.Equal(t, byts, []byte{})
 }
 
-func TestConfigGlobalGet(t *testing.T) {
+func TestInfo(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Version:      "v1.2.3",
+		Started:      time.Date(2008, 11, 7, 11, 22, 0, 0, time.Local),
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
@@ -129,20 +139,59 @@ func TestConfigGlobalGet(t *testing.T) {
 	defer tr.CloseIdleConnections()
 	hc := &http.Client{Transport: tr}
 
-	var out map[string]interface{}
-	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/config/global/get", nil, &out)
+	var out map[string]any
+	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/info", nil, &out)
+	require.Equal(t, map[string]any{
+		"started": time.Date(2008, 11, 7, 11, 22, 0, 0, time.Local).Format(time.RFC3339),
+		"version": "v1.2.3",
+	}, out)
+}
+
+func TestConfigGlobalGet(t *testing.T) {
+	cnf := tempConf(t, "api: yes\n")
+	checked := false
+
+	api := API{
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager: &test.AuthManager{
+			AuthenticateImpl: func(req *auth.Request) *auth.Error {
+				require.Equal(t, conf.AuthActionAPI, req.Action)
+				require.Equal(t, "myuser", req.Credentials.User)
+				require.Equal(t, "mypass", req.Credentials.Pass)
+				checked = true
+				return nil
+			},
+		},
+		Parent: &testParent{},
+	}
+	err := api.Initialize()
+	require.NoError(t, err)
+	defer api.Close()
+
+	tr := &http.Transport{}
+	defer tr.CloseIdleConnections()
+	hc := &http.Client{Transport: tr}
+
+	var out map[string]any
+	httpRequest(t, hc, http.MethodGet, "http://myuser:mypass@localhost:9997/v3/config/global/get", nil, &out)
 	require.Equal(t, true, out["api"])
+
+	require.True(t, checked)
 }
 
 func TestConfigGlobalPatch(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
@@ -153,7 +202,7 @@ func TestConfigGlobalPatch(t *testing.T) {
 	hc := &http.Client{Transport: tr}
 
 	httpRequest(t, hc, http.MethodPatch, "http://localhost:9997/v3/config/global/patch",
-		map[string]interface{}{
+		map[string]any{
 			"rtmp":            false,
 			"readTimeout":     "7s",
 			"protocols":       []string{"tcp"},
@@ -162,11 +211,11 @@ func TestConfigGlobalPatch(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 
-	var out map[string]interface{}
+	var out map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/config/global/get", nil, &out)
 	require.Equal(t, false, out["rtmp"])
 	require.Equal(t, "7s", out["readTimeout"])
-	require.Equal(t, []interface{}{"tcp"}, out["protocols"])
+	require.Equal(t, []any{"tcp"}, out["protocols"])
 	require.Equal(t, float64(4096), out["readBufferCount"])
 }
 
@@ -174,17 +223,18 @@ func TestConfigGlobalPatchUnknownField(t *testing.T) { //nolint:dupl
 	cnf := tempConf(t, "api: yes\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
 	defer api.Close()
 
-	b := map[string]interface{}{
+	b := map[string]any{
 		"test": "asd",
 	}
 
@@ -211,11 +261,12 @@ func TestConfigPathDefaultsGet(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
@@ -225,7 +276,7 @@ func TestConfigPathDefaultsGet(t *testing.T) {
 	defer tr.CloseIdleConnections()
 	hc := &http.Client{Transport: tr}
 
-	var out map[string]interface{}
+	var out map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/config/pathdefaults/get", nil, &out)
 	require.Equal(t, "publisher", out["source"])
 }
@@ -234,11 +285,12 @@ func TestConfigPathDefaultsPatch(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
@@ -249,13 +301,13 @@ func TestConfigPathDefaultsPatch(t *testing.T) {
 	hc := &http.Client{Transport: tr}
 
 	httpRequest(t, hc, http.MethodPatch, "http://localhost:9997/v3/config/pathdefaults/patch",
-		map[string]interface{}{
+		map[string]any{
 			"recordFormat": "fmp4",
 		}, nil)
 
 	time.Sleep(500 * time.Millisecond)
 
-	var out map[string]interface{}
+	var out map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/config/pathdefaults/get", nil, &out)
 	require.Equal(t, "fmp4", out["recordFormat"])
 }
@@ -271,17 +323,18 @@ func TestConfigPathsList(t *testing.T) {
 		"    readPass: mypass2\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
 	defer api.Close()
 
-	type pathConfig map[string]interface{}
+	type pathConfig map[string]any
 
 	type listRes struct {
 		ItemCount int          `json:"itemCount"`
@@ -313,11 +366,12 @@ func TestConfigPathsGet(t *testing.T) {
 		"    readPass: mypass\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
@@ -327,7 +381,7 @@ func TestConfigPathsGet(t *testing.T) {
 	defer tr.CloseIdleConnections()
 	hc := &http.Client{Transport: tr}
 
-	var out map[string]interface{}
+	var out map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/config/paths/get/my/path", nil, &out)
 	require.Equal(t, "my/path", out["name"])
 	require.Equal(t, "myuser", out["readUser"])
@@ -337,11 +391,12 @@ func TestConfigPathsAdd(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
@@ -352,14 +407,14 @@ func TestConfigPathsAdd(t *testing.T) {
 	hc := &http.Client{Transport: tr}
 
 	httpRequest(t, hc, http.MethodPost, "http://localhost:9997/v3/config/paths/add/my/path",
-		map[string]interface{}{
+		map[string]any{
 			"source":                   "rtsp://127.0.0.1:9999/mypath",
 			"sourceOnDemand":           true,
 			"disablePublisherOverride": true, // test setting a deprecated parameter
 			"rpiCameraVFlip":           true,
 		}, nil)
 
-	var out map[string]interface{}
+	var out map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/config/paths/get/my/path", nil, &out)
 	require.Equal(t, "rtsp://127.0.0.1:9999/mypath", out["source"])
 	require.Equal(t, true, out["sourceOnDemand"])
@@ -371,17 +426,18 @@ func TestConfigPathsAddUnknownField(t *testing.T) { //nolint:dupl
 	cnf := tempConf(t, "api: yes\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
 	defer api.Close()
 
-	b := map[string]interface{}{
+	b := map[string]any{
 		"test": "asd",
 	}
 
@@ -408,11 +464,12 @@ func TestConfigPathsPatch(t *testing.T) { //nolint:dupl
 	cnf := tempConf(t, "api: yes\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
@@ -423,7 +480,7 @@ func TestConfigPathsPatch(t *testing.T) { //nolint:dupl
 	hc := &http.Client{Transport: tr}
 
 	httpRequest(t, hc, http.MethodPost, "http://localhost:9997/v3/config/paths/add/my/path",
-		map[string]interface{}{
+		map[string]any{
 			"source":                   "rtsp://127.0.0.1:9999/mypath",
 			"sourceOnDemand":           true,
 			"disablePublisherOverride": true, // test setting a deprecated parameter
@@ -431,12 +488,12 @@ func TestConfigPathsPatch(t *testing.T) { //nolint:dupl
 		}, nil)
 
 	httpRequest(t, hc, http.MethodPatch, "http://localhost:9997/v3/config/paths/patch/my/path",
-		map[string]interface{}{
+		map[string]any{
 			"source":         "rtsp://127.0.0.1:9998/mypath",
 			"sourceOnDemand": true,
 		}, nil)
 
-	var out map[string]interface{}
+	var out map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/config/paths/get/my/path", nil, &out)
 	require.Equal(t, "rtsp://127.0.0.1:9998/mypath", out["source"])
 	require.Equal(t, true, out["sourceOnDemand"])
@@ -448,11 +505,12 @@ func TestConfigPathsReplace(t *testing.T) { //nolint:dupl
 	cnf := tempConf(t, "api: yes\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
@@ -463,7 +521,7 @@ func TestConfigPathsReplace(t *testing.T) { //nolint:dupl
 	hc := &http.Client{Transport: tr}
 
 	httpRequest(t, hc, http.MethodPost, "http://localhost:9997/v3/config/paths/add/my/path",
-		map[string]interface{}{
+		map[string]any{
 			"source":                   "rtsp://127.0.0.1:9999/mypath",
 			"sourceOnDemand":           true,
 			"disablePublisherOverride": true, // test setting a deprecated parameter
@@ -471,12 +529,12 @@ func TestConfigPathsReplace(t *testing.T) { //nolint:dupl
 		}, nil)
 
 	httpRequest(t, hc, http.MethodPost, "http://localhost:9997/v3/config/paths/replace/my/path",
-		map[string]interface{}{
+		map[string]any{
 			"source":         "rtsp://127.0.0.1:9998/mypath",
 			"sourceOnDemand": true,
 		}, nil)
 
-	var out map[string]interface{}
+	var out map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/config/paths/get/my/path", nil, &out)
 	require.Equal(t, "rtsp://127.0.0.1:9998/mypath", out["source"])
 	require.Equal(t, true, out["sourceOnDemand"])
@@ -488,11 +546,12 @@ func TestConfigPathsReplaceNonExisting(t *testing.T) { //nolint:dupl
 	cnf := tempConf(t, "api: yes\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
@@ -503,12 +562,12 @@ func TestConfigPathsReplaceNonExisting(t *testing.T) { //nolint:dupl
 	hc := &http.Client{Transport: tr}
 
 	httpRequest(t, hc, http.MethodPost, "http://localhost:9997/v3/config/paths/replace/my/path",
-		map[string]interface{}{
+		map[string]any{
 			"source":         "rtsp://127.0.0.1:9998/mypath",
 			"sourceOnDemand": true,
 		}, nil)
 
-	var out map[string]interface{}
+	var out map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/config/paths/get/my/path", nil, &out)
 	require.Equal(t, "rtsp://127.0.0.1:9998/mypath", out["source"])
 	require.Equal(t, true, out["sourceOnDemand"])
@@ -520,11 +579,12 @@ func TestConfigPathsDelete(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err := api.Initialize()
 	require.NoError(t, err)
@@ -535,7 +595,7 @@ func TestConfigPathsDelete(t *testing.T) {
 	hc := &http.Client{Transport: tr}
 
 	httpRequest(t, hc, http.MethodPost, "http://localhost:9997/v3/config/paths/add/my/path",
-		map[string]interface{}{
+		map[string]any{
 			"source":         "rtsp://127.0.0.1:9999/mypath",
 			"sourceOnDemand": true,
 		}, nil)
@@ -565,11 +625,12 @@ func TestRecordingsList(t *testing.T) {
 		"  all_others:\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err = api.Initialize()
 	require.NoError(t, err)
@@ -594,28 +655,28 @@ func TestRecordingsList(t *testing.T) {
 	defer tr.CloseIdleConnections()
 	hc := &http.Client{Transport: tr}
 
-	var out interface{}
+	var out any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/recordings/list", nil, &out)
-	require.Equal(t, map[string]interface{}{
+	require.Equal(t, map[string]any{
 		"itemCount": float64(2),
 		"pageCount": float64(1),
-		"items": []interface{}{
-			map[string]interface{}{
+		"items": []any{
+			map[string]any{
 				"name": "mypath1",
-				"segments": []interface{}{
-					map[string]interface{}{
-						"start": time.Date(2008, 11, 0o7, 11, 22, 0, 500000000, time.Local).Format(time.RFC3339Nano),
+				"segments": []any{
+					map[string]any{
+						"start": time.Date(2008, 11, 7, 11, 22, 0, 500000000, time.Local).Format(time.RFC3339Nano),
 					},
-					map[string]interface{}{
-						"start": time.Date(2009, 11, 0o7, 11, 22, 0, 900000000, time.Local).Format(time.RFC3339Nano),
+					map[string]any{
+						"start": time.Date(2009, 11, 7, 11, 22, 0, 900000000, time.Local).Format(time.RFC3339Nano),
 					},
 				},
 			},
-			map[string]interface{}{
+			map[string]any{
 				"name": "mypath2",
-				"segments": []interface{}{
-					map[string]interface{}{
-						"start": time.Date(2009, 11, 0o7, 11, 22, 0, 900000000, time.Local).Format(time.RFC3339Nano),
+				"segments": []any{
+					map[string]any{
+						"start": time.Date(2009, 11, 7, 11, 22, 0, 900000000, time.Local).Format(time.RFC3339Nano),
 					},
 				},
 			},
@@ -634,11 +695,12 @@ func TestRecordingsGet(t *testing.T) {
 		"  all_others:\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err = api.Initialize()
 	require.NoError(t, err)
@@ -657,16 +719,16 @@ func TestRecordingsGet(t *testing.T) {
 	defer tr.CloseIdleConnections()
 	hc := &http.Client{Transport: tr}
 
-	var out interface{}
+	var out any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/recordings/get/mypath1", nil, &out)
-	require.Equal(t, map[string]interface{}{
+	require.Equal(t, map[string]any{
 		"name": "mypath1",
-		"segments": []interface{}{
-			map[string]interface{}{
-				"start": time.Date(2008, 11, 0o7, 11, 22, 0, 0, time.Local).Format(time.RFC3339Nano),
+		"segments": []any{
+			map[string]any{
+				"start": time.Date(2008, 11, 7, 11, 22, 0, 0, time.Local).Format(time.RFC3339Nano),
 			},
-			map[string]interface{}{
-				"start": time.Date(2009, 11, 0o7, 11, 22, 0, 900000000, time.Local).Format(time.RFC3339Nano),
+			map[string]any{
+				"start": time.Date(2009, 11, 7, 11, 22, 0, 900000000, time.Local).Format(time.RFC3339Nano),
 			},
 		},
 	}, out)
@@ -683,11 +745,12 @@ func TestRecordingsDeleteSegment(t *testing.T) {
 		"  all_others:\n")
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
-		Conf:        cnf,
-		AuthManager: test.NilAuthManager,
-		Parent:      &testParent{},
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager:  test.NilAuthManager,
+		Parent:       &testParent{},
 	}
 	err = api.Initialize()
 	require.NoError(t, err)
@@ -708,7 +771,7 @@ func TestRecordingsDeleteSegment(t *testing.T) {
 
 	v := url.Values{}
 	v.Set("path", "mypath1")
-	v.Set("start", time.Date(2008, 11, 0o7, 11, 22, 0, 900000000, time.Local).Format(time.RFC3339Nano))
+	v.Set("start", time.Date(2008, 11, 7, 11, 22, 0, 900000000, time.Local).Format(time.RFC3339Nano))
 	u.RawQuery = v.Encode()
 
 	req, err := http.NewRequest(http.MethodDelete, u.String(), nil)
@@ -724,10 +787,11 @@ func TestAuthJWKSRefresh(t *testing.T) {
 	ok := false
 
 	api := API{
-		Address:     "localhost:9997",
-		ReadTimeout: conf.Duration(10 * time.Second),
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
 		AuthManager: &test.AuthManager{
-			AuthenticateImpl: func(_ *auth.Request) error {
+			AuthenticateImpl: func(_ *auth.Request) *auth.Error {
 				return nil
 			},
 			RefreshJWTJWKSImpl: func() {
@@ -756,4 +820,56 @@ func TestAuthJWKSRefresh(t *testing.T) {
 	require.Equal(t, http.StatusOK, res.StatusCode)
 
 	require.True(t, ok)
+}
+
+func TestAuthError(t *testing.T) {
+	cnf := tempConf(t, "api: yes\n")
+	n := 0
+
+	api := API{
+		Address:      "localhost:9997",
+		ReadTimeout:  conf.Duration(10 * time.Second),
+		WriteTimeout: conf.Duration(10 * time.Second),
+		Conf:         cnf,
+		AuthManager: &test.AuthManager{
+			AuthenticateImpl: func(req *auth.Request) *auth.Error {
+				if req.Credentials.User == "" {
+					return &auth.Error{AskCredentials: true}
+				}
+				return &auth.Error{Wrapped: fmt.Errorf("auth error")}
+			},
+		},
+		Parent: &testParent{
+			log: func(l logger.Level, s string, i ...any) {
+				if l == logger.Info {
+					if n == 1 {
+						require.Regexp(t, "failed to authenticate: auth error$", fmt.Sprintf(s, i...))
+					}
+					n++
+				}
+			},
+		},
+	}
+	err := api.Initialize()
+	require.NoError(t, err)
+	defer api.Close()
+
+	tr := &http.Transport{}
+	defer tr.CloseIdleConnections()
+	hc := &http.Client{Transport: tr}
+
+	res, err := hc.Get("http://localhost:9997/v3/config/global/get")
+	require.NoError(t, err)
+	defer res.Body.Close()
+
+	require.Equal(t, http.StatusUnauthorized, res.StatusCode)
+	require.Equal(t, `Basic realm="mediamtx"`, res.Header.Get("WWW-Authenticate"))
+
+	res, err = hc.Get("http://myuser:mypass@localhost:9997/v3/config/global/get")
+	require.NoError(t, err)
+	defer res.Body.Close()
+
+	require.Equal(t, http.StatusUnauthorized, res.StatusCode)
+
+	require.Equal(t, 2, n)
 }

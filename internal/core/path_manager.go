@@ -23,6 +23,12 @@ func pathConfCanBeUpdated(oldPathConf *conf.Path, newPathConf *conf.Path) bool {
 	clone.Regexp = newPathConf.Regexp
 
 	clone.Record = newPathConf.Record
+	clone.RecordPath = newPathConf.RecordPath
+	clone.RecordFormat = newPathConf.RecordFormat
+	clone.RecordPartDuration = newPathConf.RecordPartDuration
+	clone.RecordMaxPartSize = newPathConf.RecordMaxPartSize
+	clone.RecordSegmentDuration = newPathConf.RecordSegmentDuration
+	clone.RecordDeleteAfter = newPathConf.RecordDeleteAfter
 
 	clone.RPICameraBrightness = newPathConf.RPICameraBrightness
 	clone.RPICameraContrast = newPathConf.RPICameraContrast
@@ -70,6 +76,7 @@ type pathManager struct {
 	readTimeout       conf.Duration
 	writeTimeout      conf.Duration
 	writeQueueSize    int
+	udpReadBufferSize uint
 	rtpMaxPayloadSize int
 	pathConfs         map[string]*conf.Path
 	externalCmdPool   *externalcmd.Pool
@@ -142,7 +149,7 @@ func (pm *pathManager) close() {
 }
 
 // Log implements logger.Writer.
-func (pm *pathManager) Log(level logger.Level, format string, args ...interface{}) {
+func (pm *pathManager) Log(level logger.Level, format string, args ...any) {
 	pm.parent.Log(level, format, args...)
 }
 
@@ -317,9 +324,9 @@ func (pm *pathManager) doFindPathConf(req defs.PathFindPathConfReq) {
 		return
 	}
 
-	err = pm.authManager.Authenticate(req.AccessRequest.ToAuthRequest())
-	if err != nil {
-		req.Res <- defs.PathFindPathConfRes{Err: err}
+	err2 := pm.authManager.Authenticate(req.AccessRequest.ToAuthRequest())
+	if err2 != nil {
+		req.Res <- defs.PathFindPathConfRes{Err: err2}
 		return
 	}
 
@@ -333,9 +340,9 @@ func (pm *pathManager) doDescribe(req defs.PathDescribeReq) {
 		return
 	}
 
-	err = pm.authManager.Authenticate(req.AccessRequest.ToAuthRequest())
-	if err != nil {
-		req.Res <- defs.PathDescribeRes{Err: err}
+	err2 := pm.authManager.Authenticate(req.AccessRequest.ToAuthRequest())
+	if err2 != nil {
+		req.Res <- defs.PathDescribeRes{Err: err2}
 		return
 	}
 
@@ -356,9 +363,9 @@ func (pm *pathManager) doAddReader(req defs.PathAddReaderReq) {
 	}
 
 	if !req.AccessRequest.SkipAuth {
-		err = pm.authManager.Authenticate(req.AccessRequest.ToAuthRequest())
-		if err != nil {
-			req.Res <- defs.PathAddReaderRes{Err: err}
+		err2 := pm.authManager.Authenticate(req.AccessRequest.ToAuthRequest())
+		if err2 != nil {
+			req.Res <- defs.PathAddReaderRes{Err: err2}
 			return
 		}
 	}
@@ -379,10 +386,15 @@ func (pm *pathManager) doAddPublisher(req defs.PathAddPublisherReq) {
 		return
 	}
 
+	if req.ConfToCompare != nil && !pathConf.Equal(req.ConfToCompare) {
+		req.Res <- defs.PathAddPublisherRes{Err: fmt.Errorf("configuration has changed")}
+		return
+	}
+
 	if !req.AccessRequest.SkipAuth {
-		err = pm.authManager.Authenticate(req.AccessRequest.ToAuthRequest())
-		if err != nil {
-			req.Res <- defs.PathAddPublisherRes{Err: err}
+		err2 := pm.authManager.Authenticate(req.AccessRequest.ToAuthRequest())
+		if err2 != nil {
+			req.Res <- defs.PathAddPublisherRes{Err: err2}
 			return
 		}
 	}
@@ -428,6 +440,7 @@ func (pm *pathManager) createPath(
 		readTimeout:       pm.readTimeout,
 		writeTimeout:      pm.writeTimeout,
 		writeQueueSize:    pm.writeQueueSize,
+		udpReadBufferSize: pm.udpReadBufferSize,
 		rtpMaxPayloadSize: pm.rtpMaxPayloadSize,
 		conf:              pathConf,
 		name:              name,
@@ -520,19 +533,19 @@ func (pm *pathManager) Describe(req defs.PathDescribeReq) defs.PathDescribeRes {
 }
 
 // AddPublisher is called by a publisher.
-func (pm *pathManager) AddPublisher(req defs.PathAddPublisherReq) (defs.Path, error) {
+func (pm *pathManager) AddPublisher(req defs.PathAddPublisherReq) (defs.Path, *stream.Stream, error) {
 	req.Res = make(chan defs.PathAddPublisherRes)
 	select {
 	case pm.chAddPublisher <- req:
 		res := <-req.Res
 		if res.Err != nil {
-			return nil, res.Err
+			return nil, nil, res.Err
 		}
 
 		return res.Path.(*path).addPublisher(req)
 
 	case <-pm.ctx.Done():
-		return nil, fmt.Errorf("terminated")
+		return nil, nil, fmt.Errorf("terminated")
 	}
 }
 

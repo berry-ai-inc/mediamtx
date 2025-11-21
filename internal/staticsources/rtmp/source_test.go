@@ -1,6 +1,7 @@
 package rtmp
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"os"
@@ -9,9 +10,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/bluenviron/gortmplib"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
-	"github.com/bluenviron/mediamtx/internal/protocols/rtmp"
 	"github.com/bluenviron/mediamtx/internal/test"
 )
 
@@ -50,46 +52,6 @@ func TestSource(t *testing.T) {
 
 				defer ln.Close()
 
-				go func() {
-					for {
-						nconn, err := ln.Accept()
-						require.NoError(t, err)
-						defer nconn.Close()
-
-						conn := &rtmp.ServerConn{
-							RW: nconn,
-						}
-						err = conn.Initialize()
-						require.NoError(t, err)
-
-						if auth == "auth" {
-							err = conn.CheckCredentials("myuser", "mypass")
-							if err != nil {
-								continue
-							}
-						}
-
-						err = conn.Accept()
-						require.NoError(t, err)
-
-						w := &rtmp.Writer{
-							Conn:       conn,
-							VideoTrack: test.FormatH264,
-							AudioTrack: test.FormatMPEG4Audio,
-						}
-						err = w.Initialize()
-						require.NoError(t, err)
-
-						err = w.WriteH264(2*time.Second, 2*time.Second, [][]byte{{5, 2, 3, 4}})
-						require.NoError(t, err)
-
-						err = w.WriteH264(3*time.Second, 3*time.Second, [][]byte{{5, 2, 3, 4}})
-						require.NoError(t, err)
-
-						break
-					}
-				}()
-
 				var source string
 
 				if encryption == "plain" {
@@ -104,23 +66,77 @@ func TestSource(t *testing.T) {
 
 				source += "localhost/teststream"
 
-				te := test.NewSourceTester(
-					func(p defs.StaticSourceParent) defs.StaticSource {
-						return &Source{
-							ReadTimeout:  conf.Duration(10 * time.Second),
-							WriteTimeout: conf.Duration(10 * time.Second),
-							Parent:       p,
+				p := &test.StaticSourceParent{}
+				p.Initialize()
+				defer p.Close()
+
+				so := &Source{
+					ReadTimeout:  conf.Duration(10 * time.Second),
+					WriteTimeout: conf.Duration(10 * time.Second),
+					Parent:       p,
+				}
+
+				done := make(chan struct{})
+				defer func() { <-done }()
+
+				ctx, ctxCancel := context.WithCancel(context.Background())
+				defer ctxCancel()
+
+				reloadConf := make(chan *conf.Path)
+
+				go func() {
+					so.Run(defs.StaticSourceRunParams{ //nolint:errcheck
+						Context:        ctx,
+						ResolvedSource: source,
+						Conf: &conf.Path{
+							SourceFingerprint: "33949E05FFFB5FF3E8AA16F8213A6251B4D9363804BA53233C4DA9A46D6F2739",
+						},
+						ReloadConf: reloadConf,
+					})
+					close(done)
+				}()
+
+				for {
+					nconn, err := ln.Accept()
+					require.NoError(t, err)
+					defer nconn.Close()
+
+					conn := &gortmplib.ServerConn{
+						RW: nconn,
+					}
+					err = conn.Initialize()
+					require.NoError(t, err)
+
+					if auth == "auth" {
+						err = conn.CheckCredentials("myuser", "mypass")
+						if err != nil {
+							continue
 						}
-					},
-					source,
-					&conf.Path{
-						SourceFingerprint: "33949E05FFFB5FF3E8AA16F8213A6251B4D9363804BA53233C4DA9A46D6F2739",
-					},
-				)
+					}
 
-				defer te.Close()
+					err = conn.Accept()
+					require.NoError(t, err)
 
-				<-te.Unit
+					w := &gortmplib.Writer{
+						Conn:   conn,
+						Tracks: []format.Format{test.FormatH264, test.FormatMPEG4Audio},
+					}
+					err = w.Initialize()
+					require.NoError(t, err)
+
+					err = w.WriteH264(test.FormatH264, 2*time.Second, 2*time.Second, [][]byte{{5, 2, 3, 4}})
+					require.NoError(t, err)
+
+					err = w.WriteH264(test.FormatH264, 3*time.Second, 3*time.Second, [][]byte{{5, 2, 3, 4}})
+					require.NoError(t, err)
+
+					break
+				}
+
+				<-p.Unit
+
+				// the source must be listening on ReloadConf
+				reloadConf <- nil
 			})
 		}
 	}

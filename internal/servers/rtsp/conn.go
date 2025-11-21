@@ -4,14 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4"
-	rtspauth "github.com/bluenviron/gortsplib/v4/pkg/auth"
-	"github.com/bluenviron/gortsplib/v4/pkg/base"
-	"github.com/bluenviron/gortsplib/v4/pkg/headers"
-	"github.com/bluenviron/gortsplib/v4/pkg/liberrors"
+	"github.com/bluenviron/gortsplib/v5"
+	rtspauth "github.com/bluenviron/gortsplib/v5/pkg/auth"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/liberrors"
 	"github.com/google/uuid"
 
 	"github.com/bluenviron/mediamtx/internal/auth"
@@ -36,19 +36,16 @@ func absoluteURL(req *base.Request, v string) string {
 	return v
 }
 
-func credentialsProvided(req *base.Request) bool {
-	var auth headers.Authorization
-	err := auth.Unmarshal(req.Header["Authorization"])
-	return err == nil && auth.Username != ""
-}
-
-func contains(list []rtspauth.VerifyMethod, item rtspauth.VerifyMethod) bool {
-	for _, i := range list {
-		if i == item {
-			return true
-		}
+func tunnelLabel(t gortsplib.Tunnel) string {
+	switch t {
+	case gortsplib.TunnelHTTP:
+		return "http"
+	case gortsplib.TunnelWebSocket:
+		return "websocket"
+	case gortsplib.TunnelNone:
+		return "none"
 	}
-	return false
+	return "unknown"
 }
 
 type connParent interface {
@@ -103,8 +100,8 @@ func (c *conn) initialize() {
 }
 
 // Log implements logger.Writer.
-func (c *conn) Log(level logger.Level, format string, args ...interface{}) {
-	c.parent.Log(level, "[conn %v] "+format, append([]interface{}{c.rconn.NetConn().RemoteAddr()}, args...)...)
+func (c *conn) Log(level logger.Level, format string, args ...any) {
+	c.parent.Log(level, "[conn %v] "+format, append([]any{c.rconn.NetConn().RemoteAddr()}, args...)...)
 }
 
 // Conn returns the RTSP connection.
@@ -150,30 +147,28 @@ func (c *conn) onDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx,
 	// CustomVerifyFunc prevents hashed credentials from working.
 	// Use it only when strictly needed.
 	var customVerifyFunc func(expectedUser, expectedPass string) bool
-	if contains(c.authMethods, rtspauth.VerifyMethodDigestMD5) {
+	if slices.Contains(c.authMethods, rtspauth.VerifyMethodDigestMD5) {
 		customVerifyFunc = func(expectedUser, expectedPass string) bool {
 			return c.rconn.VerifyCredentials(ctx.Request, expectedUser, expectedPass)
 		}
 	}
 
-	req := defs.PathAccessRequest{
-		Name:             ctx.Path,
-		Query:            ctx.Query,
-		Proto:            auth.ProtocolRTSP,
-		ID:               &c.uuid,
-		Credentials:      rtsp.Credentials(ctx.Request),
-		IP:               c.ip(),
-		CustomVerifyFunc: customVerifyFunc,
-	}
-
 	res := c.pathManager.Describe(defs.PathDescribeReq{
-		AccessRequest: req,
+		AccessRequest: defs.PathAccessRequest{
+			Name:             ctx.Path,
+			Query:            ctx.Query,
+			Proto:            auth.ProtocolRTSP,
+			ID:               &c.uuid,
+			Credentials:      rtsp.Credentials(ctx.Request),
+			IP:               c.ip(),
+			CustomVerifyFunc: customVerifyFunc,
+		},
 	})
 
 	if res.Err != nil {
-		var terr auth.Error
+		var terr *auth.Error
 		if errors.As(res.Err, &terr) {
-			res, err2 := c.handleAuthError(ctx.Request)
+			res, err2 := c.handleAuthError(terr)
 			return res, nil, err2
 		}
 
@@ -210,17 +205,19 @@ func (c *conn) onDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx,
 	}, stream, nil
 }
 
-func (c *conn) handleAuthError(req *base.Request) (*base.Response, error) {
-	if credentialsProvided(req) {
-		// wait some seconds to mitigate brute force attacks
-		<-time.After(auth.PauseAfterError)
+func (c *conn) handleAuthError(err *auth.Error) (*base.Response, error) {
+	if err.AskCredentials {
+		return &base.Response{
+			StatusCode: base.StatusUnauthorized,
+		}, liberrors.ErrServerAuth{}
 	}
 
-	// let gortsplib decide whether connection should be terminated,
-	// depending on whether credentials have been provided or not.
+	// wait some seconds to delay brute force attacks
+	<-time.After(auth.PauseAfterError)
+
 	return &base.Response{
 		StatusCode: base.StatusUnauthorized,
-	}, liberrors.ErrServerAuth{}
+	}, err
 }
 
 func (c *conn) apiItem() *defs.APIRTSPConn {
@@ -239,5 +236,6 @@ func (c *conn) apiItem() *defs.APIRTSPConn {
 			}
 			return nil
 		}(),
+		Tunnel: tunnelLabel(c.rconn.Transport().Tunnel),
 	}
 }

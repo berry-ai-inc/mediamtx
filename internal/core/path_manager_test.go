@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4"
-	"github.com/bluenviron/gortsplib/v4/pkg/base"
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	"github.com/bluenviron/gortsplib/v4/pkg/headers"
+	"github.com/bluenviron/gortsplib/v5"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/headers"
 	"github.com/pion/rtp"
 	"github.com/stretchr/testify/require"
 
@@ -32,7 +32,8 @@ func TestPathAutoDeletion(t *testing.T) {
 				br := bufio.NewReader(conn)
 
 				if ca == "describe" {
-					u, err := base.ParseURL("rtsp://localhost:8554/mypath")
+					var u *base.URL
+					u, err = base.ParseURL("rtsp://localhost:8554/mypath")
 					require.NoError(t, err)
 
 					byts, _ := base.Request{
@@ -50,7 +51,8 @@ func TestPathAutoDeletion(t *testing.T) {
 					require.NoError(t, err)
 					require.Equal(t, base.StatusNotFound, res.StatusCode)
 				} else {
-					u, err := base.ParseURL("rtsp://localhost:8554/mypath/trackID=0")
+					var u *base.URL
+					u, err = base.ParseURL("rtsp://localhost:8554/mypath/trackID=0")
 					require.NoError(t, err)
 
 					byts, _ := base.Request{
@@ -132,13 +134,13 @@ func TestPathConfigurationHotReload(t *testing.T) {
 	require.Equal(t, "all", pathData.ConfName)
 
 	// Check the current configuration via API
-	var allConfig map[string]interface{}
+	var allConfig map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/config/paths/get/all", nil, &allConfig)
 	require.Equal(t, false, allConfig["record"]) // Should be false from "all" config
 
 	// Add a new specific configuration for "undefined_stream" with record enabled
 	httpRequest(t, hc, http.MethodPost, "http://localhost:9997/v3/config/paths/add/undefined_stream",
-		map[string]interface{}{
+		map[string]any{
 			"record": true,
 		}, nil)
 
@@ -152,7 +154,7 @@ func TestPathConfigurationHotReload(t *testing.T) {
 	require.Equal(t, "undefined_stream", pathData.ConfName) // Should now use the specific config
 
 	// Check the new configuration via API
-	var newConfig map[string]interface{}
+	var newConfig map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/config/paths/get/undefined_stream", nil, &newConfig)
 	require.Equal(t, true, newConfig["record"]) // Should be true from new config
 

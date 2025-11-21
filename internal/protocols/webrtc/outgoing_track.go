@@ -4,20 +4,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/rtcpsender"
+	"github.com/bluenviron/gortsplib/v5/pkg/rtpsender"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 )
-
-var multichannelOpusSDP = map[int]string{
-	3: "channel_mapping=0,2,1;num_streams=2;coupled_streams=1",
-	4: "channel_mapping=0,1,2,3;num_streams=2;coupled_streams=2",
-	5: "channel_mapping=0,4,1,2,3;num_streams=3;coupled_streams=2",
-	6: "channel_mapping=0,4,1,2,3,5;num_streams=4;coupled_streams=2",
-	7: "channel_mapping=0,4,1,2,3,5,6;num_streams=4;coupled_streams=4",
-	8: "channel_mapping=0,6,1,4,5,2,3,7;num_streams=5;coupled_streams=4",
-}
 
 // OutgoingTrack is a WebRTC outgoing track
 type OutgoingTrack struct {
@@ -25,7 +16,7 @@ type OutgoingTrack struct {
 
 	track      *webrtc.TrackLocalStaticRTP
 	ssrc       uint32
-	rtcpSender *rtcpsender.RTCPSender
+	rtcpSender *rtpsender.Sender
 }
 
 func (t *OutgoingTrack) isVideo() bool {
@@ -57,7 +48,7 @@ func (t *OutgoingTrack) setup(p *PeerConnection) error {
 
 	t.ssrc = uint32(sender.GetParameters().Encodings[0].SSRC)
 
-	t.rtcpSender = &rtcpsender.RTCPSender{
+	t.rtcpSender = &rtpsender.Sender{
 		ClockRate: int(t.track.Codec().ClockRate),
 		Period:    1 * time.Second,
 		TimeNow:   time.Now,
@@ -67,20 +58,18 @@ func (t *OutgoingTrack) setup(p *PeerConnection) error {
 	}
 	t.rtcpSender.Initialize()
 
-	p.wr.GetSenders()
-
 	// incoming RTCP packets must always be read to make interceptors work
 	go func() {
 		buf := make([]byte, 1500)
 		for {
-			n, _, err := sender.Read(buf)
-			if err != nil {
+			n, _, err2 := sender.Read(buf)
+			if err2 != nil {
 				return
 			}
 
-			_, err = rtcp.Unmarshal(buf[:n])
-			if err != nil {
-				panic(err)
+			_, err2 = rtcp.Unmarshal(buf[:n])
+			if err2 != nil {
+				panic(err2)
 			}
 		}
 	}()
