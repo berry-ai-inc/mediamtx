@@ -75,7 +75,7 @@ func TestRecorder(t *testing.T) {
 	writeToStream := func(strm *stream.Stream, startDTS int64, startNTP time.Time) {
 		for i := range 2 {
 			pts := startDTS + int64(i)*100*90000/1000
-			ntp := startNTP.Add(time.Duration(i*60) * time.Second)
+			ntp := startNTP.Add(time.Duration(i*100) * time.Millisecond)
 
 			strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
 				PTS: pts,
@@ -179,7 +179,7 @@ func TestRecorder(t *testing.T) {
 						case 0:
 							require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext), segPath)
 						case 1:
-							require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext), segPath)
+							require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-15-27-000000."+ext), segPath)
 						default:
 							require.Equal(t, filepath.Join(dir, "mypath", "2010-05-20_22-15-25-000000."+ext), segPath)
 						}
@@ -191,7 +191,7 @@ func TestRecorder(t *testing.T) {
 							require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext), segPath)
 							require.Equal(t, 2*time.Second, du)
 						case 1:
-							require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext), segPath)
+							require.Equal(t, filepath.Join(dir, "mypath", "2008-05-20_22-15-27-000000."+ext), segPath)
 							require.Equal(t, 100*time.Millisecond, du)
 						default:
 							require.Equal(t, filepath.Join(dir, "mypath", "2010-05-20_22-15-25-000000."+ext), segPath)
@@ -215,7 +215,7 @@ func TestRecorder(t *testing.T) {
 
 				writeToStream(strm,
 					52*90000,
-					time.Date(2008, 5, 20, 22, 16, 25, 0, time.UTC))
+					time.Date(2008, 5, 20, 22, 15, 27, 0, time.UTC))
 
 				// simulate a write error
 				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
@@ -313,18 +313,18 @@ func TestRecorder(t *testing.T) {
 						},
 					}, init)
 
-					_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext))
+					_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-15-27-000000."+ext))
 					require.NoError(t, err)
 
 					// berry's
-					csvFi, err2 := os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+"csv"))
+					csvFi, err2 := os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-15-27-000000."+"csv"))
 					require.NoError(t, err2)
 					require.Greater(t, csvFi.Size(), int64(0))
 				} else {
 					_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000."+ext))
 					require.NoError(t, err)
 
-					_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-16-25-000000."+ext))
+					_, err = os.Stat(filepath.Join(dir, "mypath", "2008-05-20_22-15-27-000000."+ext))
 					require.NoError(t, err)
 				}
 
@@ -344,10 +344,8 @@ func TestRecorder(t *testing.T) {
 				_, err = os.Stat(filepath.Join(dir, "mypath", "2010-05-20_22-15-25-000000."+ext))
 				require.NoError(t, err)
 
-				// berry's
-				if ext == "mp4" {
+				if ca == "fmp4" {
 					var byts []byte
-
 					byts, err = os.ReadFile(filepath.Join(dir, "mypath", "2008-05-20_22-15-25-000000.mp4"))
 					require.NoError(t, err)
 
@@ -355,37 +353,73 @@ func TestRecorder(t *testing.T) {
 					err = parts.Unmarshal(byts)
 					require.NoError(t, err)
 
-					foundTrack1 := false
-					foundTrack2 := false
-					foundTrack3 := false
-					foundTrack4 := false
-					foundTrack5 := false
-
 					for _, part := range parts {
 						for _, track := range part.Tracks {
-							if track.ID == 1 {
-								foundTrack1 = true
-							}
-							if track.ID == 2 {
-								foundTrack2 = true
-							}
-							if track.ID == 3 {
-								foundTrack3 = true
-							}
-							if track.ID == 4 {
-								foundTrack4 = true
-							}
-							if track.ID == 5 {
-								foundTrack5 = true
-							}
+							track.Samples = nil
 						}
 					}
 
-					require.Equal(t, true, foundTrack1)
-					require.Equal(t, true, foundTrack2)
-					require.Equal(t, recAudio, foundTrack3)
-					require.Equal(t, recAudio, foundTrack4)
-					require.Equal(t, recAudio, foundTrack5)
+					if recAudio {
+						require.Equal(t, fmp4.Parts{
+							{
+								Tracks: []*fmp4.PartTrack{{
+									ID: 1,
+								}},
+							},
+							{
+								SequenceNumber: 1,
+								Tracks: []*fmp4.PartTrack{{
+									ID: 2,
+								}},
+							},
+							{
+								SequenceNumber: 2,
+								Tracks: []*fmp4.PartTrack{{
+									ID: 3,
+								}},
+							},
+							{
+								SequenceNumber: 3,
+								Tracks: []*fmp4.PartTrack{{
+									ID: 4,
+								}},
+							},
+							{
+								SequenceNumber: 4,
+								Tracks: []*fmp4.PartTrack{{
+									ID: 5,
+								}},
+							},
+							{
+								SequenceNumber: 5,
+								Tracks: []*fmp4.PartTrack{{
+									ID:       1,
+									BaseTime: 9000,
+								}},
+							},
+						}, parts)
+					} else {
+						require.Equal(t, fmp4.Parts{
+							{
+								Tracks: []*fmp4.PartTrack{{
+									ID: 1,
+								}},
+							},
+							{
+								SequenceNumber: 1,
+								Tracks: []*fmp4.PartTrack{{
+									ID: 2,
+								}},
+							},
+							{
+								SequenceNumber: 2,
+								Tracks: []*fmp4.PartTrack{{
+									ID:       1,
+									BaseTime: 9000,
+								}},
+							},
+						}, parts)
+					}
 				}
 			})
 		}
@@ -824,4 +858,225 @@ func TestRecorderFMP4SegmentSwitch(t *testing.T) {
 	w.Close()
 
 	require.Equal(t, 2, n)
+}
+
+func TestRecorderTimeDriftDetector(t *testing.T) {
+	for _, ca := range []string{"fmp4", "mpegts"} {
+		t.Run(ca, func(t *testing.T) {
+			desc := &description.Session{Medias: []*description.Media{
+				{
+					Type: description.MediaTypeVideo,
+					Formats: []rtspformat.Format{&rtspformat.H264{
+						PayloadTyp:        96,
+						PacketizationMode: 1,
+					}},
+				},
+				{
+					Type: description.MediaTypeAudio,
+					Formats: []rtspformat.Format{&rtspformat.MPEG4Audio{
+						PayloadTyp: 96,
+						Config: &mpeg4audio.AudioSpecificConfig{
+							Type:         2,
+							SampleRate:   44100,
+							ChannelCount: 2,
+						},
+						SizeLength:       13,
+						IndexLength:      3,
+						IndexDeltaLength: 3,
+					}},
+				},
+			}}
+
+			strm := &stream.Stream{
+				WriteQueueSize:     512,
+				RTPMaxPayloadSize:  1450,
+				Desc:               desc,
+				GenerateRTPPackets: true,
+				Parent:             test.NilLogger,
+			}
+			err := strm.Initialize()
+			require.NoError(t, err)
+			defer strm.Close()
+
+			dir, err := os.MkdirTemp("", "mediamtx-agent")
+			require.NoError(t, err)
+			defer os.RemoveAll(dir)
+
+			recordPath := filepath.Join(dir, "%path/%Y-%m-%d_%H-%M-%S-%f")
+
+			var ext string
+			if ca == "fmp4" {
+				ext = "mp4"
+			} else {
+				ext = "ts"
+			}
+
+			segCreated := make(chan struct{}, 10)
+			segDone := make(chan struct{}, 10)
+
+			var f conf.RecordFormat
+			if ca == "fmp4" {
+				f = conf.RecordFormatFMP4
+			} else {
+				f = conf.RecordFormatMPEGTS
+			}
+
+			w := &Recorder{
+				PathFormat:      recordPath,
+				Format:          f,
+				PartDuration:    100 * time.Millisecond,
+				MaxPartSize:     50 * 1024 * 1024,
+				SegmentDuration: 1 * time.Second,
+				PathName:        "mypath",
+				Stream:          strm,
+				OnSegmentCreate: func(_ string) {
+					select {
+					case segCreated <- struct{}{}:
+					default:
+					}
+				},
+				OnSegmentComplete: func(_ string, _ time.Duration) {
+					select {
+					case segDone <- struct{}{}:
+					default:
+					}
+				},
+				Parent:       test.NilLogger,
+				restartPause: 10 * time.Millisecond,
+			}
+			w.Initialize()
+
+			// Write initial samples with correct timing
+			startDTS := int64(50 * 90000)
+			startNTP := time.Date(2008, 5, 20, 22, 15, 25, 0, time.UTC)
+
+			for i := range 3 {
+				pts := startDTS + int64(i)*100*90000/1000
+				ntp := startNTP.Add(time.Duration(i*100) * time.Millisecond)
+
+				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+					PTS: pts,
+					NTP: ntp,
+					Payload: unit.PayloadH264{
+						test.FormatH264.SPS,
+						test.FormatH264.PPS,
+						{5}, // IDR
+					},
+				})
+
+				strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.Unit{
+					PTS:     pts * int64(desc.Medias[1].Formats[0].ClockRate()) / 90000,
+					NTP:     ntp,
+					Payload: unit.PayloadMPEG4Audio{{1, 2, 3, 4}},
+				})
+			}
+
+			// Wait for first segment to be created
+			select {
+			case <-segCreated:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timeout waiting for first segment")
+			}
+
+			// Write more samples to ensure segment has data
+			for i := 3; i < 15; i++ {
+				pts := startDTS + int64(i)*100*90000/1000
+				ntp := startNTP.Add(time.Duration(i*100) * time.Millisecond)
+
+				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+					PTS: pts,
+					NTP: ntp,
+					Payload: unit.PayloadH264{
+						test.FormatH264.SPS,
+						test.FormatH264.PPS,
+						{5}, // IDR
+					},
+				})
+
+				strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.Unit{
+					PTS:     pts * int64(desc.Medias[1].Formats[0].ClockRate()) / 90000,
+					NTP:     ntp,
+					Payload: unit.PayloadMPEG4Audio{{1, 2, 3, 4}},
+				})
+			}
+
+			// Simulate a time drift by advancing NTP time by more than 5 seconds
+			// while keeping DTS progression normal (only 100ms forward)
+			driftedPTS := startDTS + 15*100*90000/1000
+			driftedNTP := startNTP.Add(15*100*time.Millisecond + 6*time.Second) // 6 second drift
+
+			strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+				PTS: driftedPTS,
+				NTP: driftedNTP,
+				Payload: unit.PayloadH264{
+					test.FormatH264.SPS,
+					test.FormatH264.PPS,
+					{5}, // IDR
+				},
+			})
+
+			// Wait for the recorder to detect the drift, complete the segment, and restart
+			select {
+			case <-segDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timeout waiting for segment completion after drift")
+			}
+
+			// Give the recorder time to restart
+			time.Sleep(100 * time.Millisecond)
+
+			// Write samples after restart with corrected timing
+			restartDTS := int64(60 * 90000)
+			restartNTP := time.Date(2008, 5, 20, 22, 15, 35, 0, time.UTC)
+
+			for i := range 3 {
+				pts := restartDTS + int64(i)*100*90000/1000
+				ntp := restartNTP.Add(time.Duration(i*100) * time.Millisecond)
+
+				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+					PTS: pts,
+					NTP: ntp,
+					Payload: unit.PayloadH264{
+						test.FormatH264.SPS,
+						test.FormatH264.PPS,
+						{5}, // IDR
+					},
+				})
+
+				strm.WriteUnit(desc.Medias[1], desc.Medias[1].Formats[0], &unit.Unit{
+					PTS:     pts * int64(desc.Medias[1].Formats[0].ClockRate()) / 90000,
+					NTP:     ntp,
+					Payload: unit.PayloadMPEG4Audio{{1, 2, 3, 4}},
+				})
+			}
+
+			// Wait for second segment to be created after restart
+			select {
+			case <-segCreated:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timeout waiting for segment after restart")
+			}
+
+			time.Sleep(50 * time.Millisecond)
+
+			w.Close()
+
+			// Wait for final segment to complete
+			select {
+			case <-segDone:
+			case <-time.After(2 * time.Second):
+				// This is not fatal as the final segment may complete during Close()
+			}
+
+			// Verify that files were created
+			entries, err := os.ReadDir(filepath.Join(dir, "mypath"))
+			require.NoError(t, err)
+			require.GreaterOrEqual(t, len(entries), 2, "expected at least 2 segments (before and after drift)")
+
+			// Verify files have the expected extension
+			for _, entry := range entries {
+				require.Equal(t, "."+ext, filepath.Ext(entry.Name()))
+			}
+		})
+	}
 }
