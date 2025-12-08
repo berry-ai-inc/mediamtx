@@ -5,8 +5,9 @@ import (
 	"time"
 )
 
-const (
-	maxTimeDifference = 5 * time.Second
+// berry's, upstream uses 5 seconds
+var ( // var so we can restore it to 5 seconds in test
+	maxTimeDifference = 1 * time.Second
 )
 
 var timeNow = time.Now

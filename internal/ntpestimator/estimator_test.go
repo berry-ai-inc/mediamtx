@@ -8,6 +8,7 @@ import (
 )
 
 func TestEstimator(t *testing.T) {
+	maxTimeDifference = 5 * time.Second
 	e := &Estimator{ClockRate: 90000}
 
 	timeNow = func() time.Time { return time.Date(2003, 11, 4, 23, 15, 7, 0, time.UTC) }
