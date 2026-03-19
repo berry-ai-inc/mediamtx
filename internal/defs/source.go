@@ -17,20 +17,17 @@ import (
 // - core.sourceRedirect
 type Source interface {
 	logger.Writer
-	APISourceDescribe() APIPathSourceOrReader
-}
-
-// FormatsToCodecs returns the name of codecs of given formats.
-func FormatsToCodecs(formats []format.Format) []string {
-	ret := make([]string, len(formats))
-	for i, forma := range formats {
-		ret[i] = forma.Codec()
-	}
-	return ret
+	APISourceDescribe() *APIPathSource
 }
 
 // FormatsInfo returns a description of formats.
 func FormatsInfo(formats []format.Format) string {
+	codecs := FormatsToCodecs(formats)
+	codecNames := make([]string, len(codecs))
+	for i, codec := range codecs {
+		codecNames[i] = string(codec)
+	}
+
 	return fmt.Sprintf("%d %s (%s)",
 		len(formats),
 		func() string {
@@ -39,25 +36,10 @@ func FormatsInfo(formats []format.Format) string {
 			}
 			return "tracks"
 		}(),
-		strings.Join(FormatsToCodecs(formats), ", "))
-}
-
-// MediasToCodecs returns the name of codecs of given formats.
-func MediasToCodecs(medias []*description.Media) []string {
-	var formats []format.Format
-	for _, media := range medias {
-		formats = append(formats, media.Formats...)
-	}
-
-	return FormatsToCodecs(formats)
+		strings.Join(codecNames, ", "))
 }
 
 // MediasInfo returns a description of medias.
 func MediasInfo(medias []*description.Media) string {
-	var formats []format.Format
-	for _, media := range medias {
-		formats = append(formats, media.Formats...)
-	}
-
-	return FormatsInfo(formats)
+	return FormatsInfo(gatherFormats(medias))
 }

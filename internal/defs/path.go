@@ -32,6 +32,7 @@ type Path interface {
 // PathFindPathConfRes contains the response of FindPathConf().
 type PathFindPathConfRes struct {
 	Conf *conf.Path
+	User string
 	Err  error
 }
 
@@ -57,20 +58,21 @@ type PathDescribeReq struct {
 
 // PathAddPublisherRes contains the response of AddPublisher().
 type PathAddPublisherRes struct {
-	Path   Path
-	Stream *stream.Stream
-	Err    error
+	Path      Path
+	User      string
+	SubStream *stream.SubStream
+	Err       error
 }
 
 // PathAddPublisherReq contains arguments of AddPublisher().
 type PathAddPublisherReq struct {
-	Author             Publisher
-	Desc               *description.Session
-	GenerateRTPPackets bool
-	FillNTP            bool
-	ConfToCompare      *conf.Path
-	AccessRequest      PathAccessRequest
-	Res                chan PathAddPublisherRes
+	Author        Publisher
+	Desc          *description.Session
+	UseRTPPackets bool
+	ReplaceNTP    bool
+	ConfToCompare *conf.Path
+	AccessRequest PathAccessRequest
+	Res           chan PathAddPublisherRes
 }
 
 // PathRemovePublisherReq contains arguments of RemovePublisher().
@@ -82,6 +84,7 @@ type PathRemovePublisherReq struct {
 // PathAddReaderRes contains the response of AddReader().
 type PathAddReaderRes struct {
 	Path   Path
+	User   string
 	Stream *stream.Stream
 	Err    error
 }
@@ -99,18 +102,18 @@ type PathRemoveReaderReq struct {
 	Res    chan struct{}
 }
 
-// PathSourceStaticSetReadyRes contains the response of SetReadu().
+// PathSourceStaticSetReadyRes contains the response of SetReady().
 type PathSourceStaticSetReadyRes struct {
-	Stream *stream.Stream
-	Err    error
+	SubStream *stream.SubStream
+	Err       error
 }
 
 // PathSourceStaticSetReadyReq contains arguments of SetReady().
 type PathSourceStaticSetReadyReq struct {
-	Desc               *description.Session
-	GenerateRTPPackets bool
-	FillNTP            bool
-	Res                chan PathSourceStaticSetReadyRes
+	Desc          *description.Session
+	UseRTPPackets bool
+	ReplaceNTP    bool
+	Res           chan PathSourceStaticSetReadyRes
 }
 
 // PathSourceStaticSetNotReadyReq contains arguments of SetNotReady().

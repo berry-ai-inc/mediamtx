@@ -99,7 +99,7 @@ var toFromStreamCases = []struct {
 	{
 		"opus multichannel",
 		&format.Opus{
-			PayloadTyp:   112,
+			PayloadTyp:   96,
 			ChannelCount: 6,
 		},
 		webrtc.RTPCodecCapability{
@@ -116,7 +116,7 @@ var toFromStreamCases = []struct {
 	{
 		"opus stereo",
 		&format.Opus{
-			PayloadTyp:   111,
+			PayloadTyp:   96,
 			ChannelCount: 2,
 		},
 		webrtc.RTPCodecCapability{
@@ -133,7 +133,7 @@ var toFromStreamCases = []struct {
 	{
 		"opus mono",
 		&format.Opus{
-			PayloadTyp:   111,
+			PayloadTyp:   96,
 			ChannelCount: 1,
 		},
 		webrtc.RTPCodecCapability{
@@ -205,7 +205,7 @@ var toFromStreamCases = []struct {
 			Channels:  2,
 		},
 		&format.G711{
-			PayloadTyp:   119,
+			PayloadTyp:   96,
 			SampleRate:   8000,
 			ChannelCount: 2,
 		},
@@ -225,7 +225,7 @@ var toFromStreamCases = []struct {
 		},
 		&format.G711{
 			MULaw:        true,
-			PayloadTyp:   118,
+			PayloadTyp:   96,
 			SampleRate:   8000,
 			ChannelCount: 2,
 		},
@@ -335,11 +335,9 @@ func TestToStream(t *testing.T) {
 	for _, ca := range toFromStreamCases {
 		t.Run(ca.name, func(t *testing.T) {
 			pc1 := &PeerConnection{
-				LocalRandomUDP:     true,
-				IPsFromInterfaces:  true,
-				HandshakeTimeout:   conf.Duration(10 * time.Second),
-				TrackGatherTimeout: conf.Duration(2 * time.Second),
-				Publish:            true,
+				LocalRandomUDP:    true,
+				IPsFromInterfaces: true,
+				Publish:           true,
 				OutgoingTracks: []*OutgoingTrack{{
 					Caps: ca.webrtcCaps,
 				}},
@@ -350,12 +348,10 @@ func TestToStream(t *testing.T) {
 			defer pc1.Close()
 
 			pc2 := &PeerConnection{
-				LocalRandomUDP:     true,
-				IPsFromInterfaces:  true,
-				HandshakeTimeout:   conf.Duration(10 * time.Second),
-				TrackGatherTimeout: conf.Duration(2 * time.Second),
-				Publish:            false,
-				Log:                test.NilLogger,
+				LocalRandomUDP:    true,
+				IPsFromInterfaces: true,
+				Publish:           false,
+				Log:               test.NilLogger,
 			}
 			err = pc2.Start()
 			require.NoError(t, err)
@@ -383,10 +379,10 @@ func TestToStream(t *testing.T) {
 				}
 			}()
 
-			err = pc1.WaitUntilConnected()
+			err = pc1.WaitUntilConnected(10 * time.Second)
 			require.NoError(t, err)
 
-			err = pc2.WaitUntilConnected()
+			err = pc2.WaitUntilConnected(10 * time.Second)
 			require.NoError(t, err)
 
 			err = pc1.OutgoingTracks[0].WriteRTP(&rtp.Packet{
@@ -402,11 +398,11 @@ func TestToStream(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			err = pc2.GatherIncomingTracks()
+			err = pc2.GatherIncomingTracks(2 * time.Second)
 			require.NoError(t, err)
 
-			var stream *stream.Stream
-			medias, err := ToStream(pc2, &conf.Path{}, &stream, nil)
+			var subStream *stream.SubStream
+			medias, err := ToStream(pc2, &conf.Path{}, &subStream, nil)
 			require.NoError(t, err)
 			require.Equal(t, ca.out, medias[0].Formats[0])
 		})

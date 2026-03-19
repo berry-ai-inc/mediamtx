@@ -18,7 +18,6 @@ import (
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
@@ -58,6 +57,25 @@ func interfaceIPs(interfaceList []string) ([]string, error) {
 	}
 
 	return ips, nil
+}
+
+func maxTrackCount(medias []*sdp.MediaDescription) int {
+	total := 0
+	for _, media := range medias {
+		ridCount := 0
+
+		for _, attr := range media.Attributes {
+			if attr.Key == "rid" {
+				ridCount++
+			}
+		}
+
+		if ridCount == 0 {
+			ridCount = 1
+		}
+		total += ridCount
+	}
+	return total
 }
 
 // * skip ConfigureRTCPReports
@@ -140,18 +158,17 @@ type PeerConnection struct {
 	IPsFromInterfaces     bool
 	IPsFromInterfacesList []string
 	AdditionalHosts       []string
-	HandshakeTimeout      conf.Duration
-	TrackGatherTimeout    conf.Duration
-	STUNGatherTimeout     conf.Duration
+	STUNGatherTimeout     time.Duration
 	Publish               bool
 	OutgoingTracks        []*OutgoingTrack
+	OutgoingDataChannels  []*OutgoingDataChannel
 	Log                   logger.Writer
 
 	wr               *webrtc.PeerConnection
 	ctx              context.Context
 	ctxCancel        context.CancelFunc
+	readingStarted   *int64
 	incomingTracks   []*IncomingTrack
-	startedReading   *int64
 	statsInterceptor *statsInterceptor
 
 	newLocalCandidate chan *webrtc.ICECandidateInit
@@ -166,6 +183,10 @@ type PeerConnection struct {
 
 // Start starts the peer connection.
 func (co *PeerConnection) Start() error {
+	if co.STUNGatherTimeout == 0 {
+		co.STUNGatherTimeout = 5 * time.Second
+	}
+
 	settingsEngine := webrtc.SettingEngine{}
 
 	settingsEngine.SetIncludeLoopbackCandidate(true)
@@ -190,7 +211,7 @@ func (co *PeerConnection) Start() error {
 		settingsEngine.SetICETCPMux(co.ICETCPMux.Mux)
 	}
 
-	settingsEngine.SetSTUNGatherTimeout(time.Duration(co.STUNGatherTimeout))
+	settingsEngine.SetSTUNGatherTimeout(co.STUNGatherTimeout)
 
 	webrtcNet := &webrtcNet{
 		udpReadBufferSize: int(co.UDPReadBufferSize),
@@ -299,7 +320,7 @@ func (co *PeerConnection) Start() error {
 
 	co.ctx, co.ctxCancel = context.WithCancel(context.Background())
 
-	co.startedReading = new(int64)
+	co.readingStarted = new(int64)
 
 	co.newLocalCandidate = make(chan *webrtc.ICECandidateInit)
 	co.connected = make(chan struct{})
@@ -313,6 +334,14 @@ func (co *PeerConnection) Start() error {
 	if co.Publish {
 		for _, tr := range co.OutgoingTracks {
 			err = tr.setup(co)
+			if err != nil {
+				co.wr.GracefulClose() //nolint:errcheck
+				return err
+			}
+		}
+
+		for _, dc := range co.OutgoingDataChannels {
+			err = dc.setup(co)
 			if err != nil {
 				co.wr.GracefulClose() //nolint:errcheck
 				return err
@@ -431,7 +460,7 @@ func (co *PeerConnection) run() {
 		// even if GracefulClose() should wait for any goroutine to return,
 		// we have to wait for OnConnectionStateChange to return anyway,
 		// since it is executed in an uncontrolled goroutine.
-		// https://github.com/pion/webrtc/blob/4742d1fd54abbc3f81c3b56013654574ba7254f3/peerconnection.go#L509
+		// https://github.com/pion/webrtc/blob/v4.2.8/peerconnection.go#L529
 		<-co.closed
 	}()
 
@@ -441,7 +470,7 @@ func (co *PeerConnection) run() {
 			for _, track := range co.incomingTracks {
 				track.start()
 			}
-			atomic.StoreInt64(co.startedReading, 1)
+			atomic.StoreInt64(co.readingStarted, 1)
 
 		case <-co.ctx.Done():
 			return
@@ -660,8 +689,8 @@ func (co *PeerConnection) waitGatheringDone() error {
 }
 
 // WaitUntilConnected waits until connection is established.
-func (co *PeerConnection) WaitUntilConnected() error {
-	t := time.NewTimer(time.Duration(co.HandshakeTimeout))
+func (co *PeerConnection) WaitUntilConnected(timeout time.Duration) error {
+	t := time.NewTimer(timeout)
 	defer t.Stop()
 
 outer:
@@ -682,13 +711,13 @@ outer:
 }
 
 // GatherIncomingTracks gathers incoming tracks.
-func (co *PeerConnection) GatherIncomingTracks() error {
+func (co *PeerConnection) GatherIncomingTracks(timeout time.Duration) error {
 	var sdp sdp.SessionDescription
 	sdp.Unmarshal([]byte(co.wr.RemoteDescription().SDP)) //nolint:errcheck
 
-	maxTrackCount := len(sdp.MediaDescriptions)
+	maxTrackCount := maxTrackCount(sdp.MediaDescriptions)
 
-	t := time.NewTimer(time.Duration(co.TrackGatherTimeout))
+	t := time.NewTimer(timeout)
 	defer t.Stop()
 
 	for {
@@ -703,6 +732,7 @@ func (co *PeerConnection) GatherIncomingTracks() error {
 			t := &IncomingTrack{
 				track:     pair.track,
 				receiver:  pair.receiver,
+				rid:       pair.track.RID(),
 				writeRTCP: co.wr.WriteRTCP,
 				log:       co.Log,
 			}
@@ -806,20 +836,20 @@ func (co *PeerConnection) Stats() *Stats {
 	packetsSent := uint64(0)
 	packetsLost := uint64(0)
 
-	if atomic.LoadInt64(co.startedReading) == 1 {
+	if atomic.LoadInt64(co.readingStarted) == 1 {
 		for _, tr := range co.incomingTracks {
 			if recvStats := tr.rtpReceiver.Stats(); recvStats != nil {
 				v += recvStats.Jitter
 				n++
-				packetsReceived += recvStats.TotalReceived
-				packetsLost += recvStats.TotalLost
+				packetsReceived += recvStats.Received
+				packetsLost += recvStats.Lost
 			}
 		}
 	}
 
 	for _, tr := range co.OutgoingTracks {
 		if sentStats := tr.rtcpSender.Stats(); sentStats != nil {
-			packetsSent += sentStats.TotalSent
+			packetsSent += sentStats.Sent
 		}
 	}
 

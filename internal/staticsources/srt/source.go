@@ -8,8 +8,8 @@ import (
 	srt "github.com/datarhei/gosrt"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
-	"github.com/bluenviron/mediamtx/internal/counterdumper"
 	"github.com/bluenviron/mediamtx/internal/defs"
+	"github.com/bluenviron/mediamtx/internal/errordumper"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/protocols/mpegts"
 	"github.com/bluenviron/mediamtx/internal/stream"
@@ -81,37 +81,34 @@ func (s *Source) runReader(sconn srt.Conn) error {
 		return err
 	}
 
-	decodeErrors := &counterdumper.CounterDumper{
-		OnReport: func(val uint64) {
-			s.Log(logger.Warn, "%d decode %s",
-				val,
-				func() string {
-					if val == 1 {
-						return "error"
-					}
-					return "errors"
-				}())
+	decodeErrors := &errordumper.Dumper{
+		OnReport: func(val uint64, last error) {
+			if val == 1 {
+				s.Log(logger.Warn, "decode error: %v", last)
+			} else {
+				s.Log(logger.Warn, "%d decode errors, last was: %v", val, last)
+			}
 		},
 	}
 
 	decodeErrors.Start()
 	defer decodeErrors.Stop()
 
-	r.OnDecodeError(func(_ error) {
-		decodeErrors.Increase()
+	r.OnDecodeError(func(err error) {
+		decodeErrors.Add(err)
 	})
 
-	var stream *stream.Stream
+	var subStream *stream.SubStream
 
-	medias, err := mpegts.ToStream(r, &stream, s)
+	medias, err := mpegts.ToStream(r, &subStream, s)
 	if err != nil {
 		return err
 	}
 
 	res := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
-		Desc:               &description.Session{Medias: medias},
-		GenerateRTPPackets: true,
-		FillNTP:            true,
+		Desc:          &description.Session{Medias: medias},
+		UseRTPPackets: false,
+		ReplaceNTP:    true,
 	})
 	if res.Err != nil {
 		return res.Err
@@ -119,7 +116,7 @@ func (s *Source) runReader(sconn srt.Conn) error {
 
 	defer s.Parent.SetNotReady(defs.PathSourceStaticSetNotReadyReq{})
 
-	stream = res.Stream
+	subStream = res.SubStream
 
 	for {
 		sconn.SetReadDeadline(time.Now().Add(time.Duration(s.ReadTimeout)))
@@ -131,9 +128,9 @@ func (s *Source) runReader(sconn srt.Conn) error {
 }
 
 // APISourceDescribe implements StaticSource.
-func (*Source) APISourceDescribe() defs.APIPathSourceOrReader {
-	return defs.APIPathSourceOrReader{
-		Type: "srtSource",
+func (*Source) APISourceDescribe() *defs.APIPathSource {
+	return &defs.APIPathSource{
+		Type: defs.APIPathSourceTypeSRTSource,
 		ID:   "",
 	}
 }

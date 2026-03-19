@@ -1,5 +1,5 @@
 // Package metrics contains the metrics provider.
-package metrics
+package metrics //nolint:revive
 
 import (
 	"io"
@@ -21,7 +21,7 @@ import (
 )
 
 func interfaceIsEmpty(i any) bool {
-	return reflect.ValueOf(i).Kind() != reflect.Ptr || reflect.ValueOf(i).IsNil()
+	return reflect.ValueOf(i).Kind() != reflect.Pointer || reflect.ValueOf(i).IsNil()
 }
 
 func sortedKeys(paths map[string]string) []string {
@@ -61,7 +61,7 @@ func metricFloat(key string, tags string, value float64) string {
 }
 
 type metricsAuthManager interface {
-	Authenticate(req *auth.Request) *auth.Error
+	Authenticate(req *auth.Request) (string, *auth.Error)
 }
 
 type metricsParent interface {
@@ -71,6 +71,7 @@ type metricsParent interface {
 // Metrics is a metrics provider.
 type Metrics struct {
 	Address        string
+	DumpPackets    bool
 	Encryption     bool
 	ServerKey      string
 	ServerCert     string
@@ -104,15 +105,17 @@ func (m *Metrics) Initialize() error {
 	router.GET("/metrics", m.onMetrics)
 
 	m.httpServer = &httpp.Server{
-		Address:      m.Address,
-		AllowOrigins: m.AllowOrigins,
-		ReadTimeout:  time.Duration(m.ReadTimeout),
-		WriteTimeout: time.Duration(m.WriteTimeout),
-		Encryption:   m.Encryption,
-		ServerCert:   m.ServerCert,
-		ServerKey:    m.ServerKey,
-		Handler:      router,
-		Parent:       m,
+		Address:           m.Address,
+		AllowOrigins:      m.AllowOrigins,
+		DumpPackets:       m.DumpPackets,
+		DumpPacketsPrefix: "metrics_server_conn",
+		ReadTimeout:       time.Duration(m.ReadTimeout),
+		WriteTimeout:      time.Duration(m.WriteTimeout),
+		Encryption:        m.Encryption,
+		ServerCert:        m.ServerCert,
+		ServerKey:         m.ServerKey,
+		Handler:           router,
+		Parent:            m,
 	}
 	err := m.httpServer.Initialize()
 	if err != nil {
@@ -153,12 +156,12 @@ func (m *Metrics) middlewareAuth(ctx *gin.Context) {
 		IP:          net.ParseIP(ctx.ClientIP()),
 	}
 
-	err := m.AuthManager.Authenticate(req)
+	_, err := m.AuthManager.Authenticate(req)
 	if err != nil {
 		if err.AskCredentials {
 			ctx.Header("WWW-Authenticate", `Basic realm="mediamtx"`)
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, &defs.APIError{
-				Status: "error",
+				Status: defs.APIErrorStatusError,
 				Error:  "authentication error",
 			})
 			return
@@ -170,7 +173,7 @@ func (m *Metrics) middlewareAuth(ctx *gin.Context) {
 		<-time.After(auth.PauseAfterError)
 
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, &defs.APIError{
-			Status: "error",
+			Status: defs.APIErrorStatusError,
 			Error:  "authentication error",
 		})
 		return
@@ -220,6 +223,10 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 						"state": state,
 					})
 					out += metric("paths", ta, 1)
+					out += metric("paths_inbound_bytes", ta, int64(i.InboundBytes))
+					out += metric("paths_outbound_bytes", ta, int64(i.OutboundBytes))
+					out += metric("paths_inbound_frames_in_error", ta, int64(i.InboundFramesInError))
+					// deprecated
 					out += metric("paths_bytes_received", ta, int64(i.BytesReceived))
 					out += metric("paths_bytes_sent", ta, int64(i.BytesSent))
 					out += metric("paths_readers", ta, int64(len(i.Readers)))
@@ -227,6 +234,10 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 			}
 		} else if pathFilter == "" {
 			out += metric("paths", "", 0)
+			out += metric("paths_inbound_bytes", "", 0)
+			out += metric("paths_outbound_bytes", "", 0)
+			out += metric("paths_inbound_frames_in_error", "", 0)
+			// deprecated
 			out += metric("paths_bytes_received", "", 0)
 			out += metric("paths_bytes_sent", "", 0)
 			out += metric("paths_readers", "", 0)
@@ -245,11 +256,17 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 						"name": i.Path,
 					})
 					out += metric("hls_muxers", ta, 1)
+					out += metric("hls_muxers_outbound_bytes", ta, int64(i.OutboundBytes))
+					out += metric("hls_muxers_outbound_frames_discarded", ta, int64(i.OutboundFramesDiscarded))
+					// deprecated
 					out += metric("hls_muxers_bytes_sent", ta, int64(i.BytesSent))
 				}
 			}
 		} else if hlsMuxerFilter == "" {
 			out += metric("hls_muxers", "", 0)
+			out += metric("hls_muxers_outbound_bytes", "", 0)
+			out += metric("hls_muxers_outbound_frames_discarded", "", 0)
+			// deprecated
 			out += metric("hls_muxers_bytes_sent", "", 0)
 		}
 	}
@@ -265,12 +282,18 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 							"id": i.ID.String(),
 						})
 						out += metric("rtsp_conns", ta, 1)
+						out += metric("rtsp_conns_inbound_bytes", ta, int64(i.InboundBytes))
+						out += metric("rtsp_conns_outbound_bytes", ta, int64(i.OutboundBytes))
+						// deprecated
 						out += metric("rtsp_conns_bytes_received", ta, int64(i.BytesReceived))
 						out += metric("rtsp_conns_bytes_sent", ta, int64(i.BytesSent))
 					}
 				}
 			} else if rtspConnFilter == "" {
 				out += metric("rtsp_conns", "", 0)
+				out += metric("rtsp_conns_inbound_bytes", "", 0)
+				out += metric("rtsp_conns_outbound_bytes", "", 0)
+				// deprecated
 				out += metric("rtsp_conns_bytes_received", "", 0)
 				out += metric("rtsp_conns_bytes_sent", "", 0)
 			}
@@ -289,6 +312,19 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 							"remoteAddr": i.RemoteAddr,
 						})
 						out += metric("rtsp_sessions", ta, 1)
+						out += metric("rtsp_sessions_inbound_bytes", ta, int64(i.InboundBytes))
+						out += metric("rtsp_sessions_inbound_rtp_packets", ta, int64(i.InboundRTPPackets))
+						out += metric("rtsp_sessions_inbound_rtp_packets_lost", ta, int64(i.InboundRTPPacketsLost))
+						out += metric("rtsp_sessions_inbound_rtp_packets_in_error", ta, int64(i.InboundRTPPacketsInError))
+						out += metricFloat("rtsp_sessions_inbound_rtp_packets_jitter", ta, i.InboundRTPPacketsJitter)
+						out += metric("rtsp_sessions_inbound_rtcp_packets", ta, int64(i.InboundRTCPPackets))
+						out += metric("rtsp_sessions_inbound_rtcp_packets_in_error", ta, int64(i.InboundRTCPPacketsInError))
+						out += metric("rtsp_sessions_outbound_bytes", ta, int64(i.OutboundBytes))
+						out += metric("rtsp_sessions_outbound_rtp_packets", ta, int64(i.OutboundRTPPackets))
+						out += metric("rtsp_sessions_outbound_rtp_packets_reported_lost", ta, int64(i.OutboundRTPPacketsReportedLost))
+						out += metric("rtsp_sessions_outbound_rtp_packets_discarded", ta, int64(i.OutboundRTPPacketsDiscarded))
+						out += metric("rtsp_sessions_outbound_rtcp_packets", ta, int64(i.OutboundRTCPPackets))
+						// deprecated
 						out += metric("rtsp_sessions_bytes_received", ta, int64(i.BytesReceived))
 						out += metric("rtsp_sessions_bytes_sent", ta, int64(i.BytesSent))
 						out += metric("rtsp_sessions_rtp_packets_received", ta, int64(i.RTPPacketsReceived))
@@ -303,6 +339,19 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 				}
 			} else if rtspSessionFilter == "" {
 				out += metric("rtsp_sessions", "", 0)
+				out += metric("rtsp_sessions_inbound_bytes", "", 0)
+				out += metric("rtsp_sessions_inbound_rtp_packets", "", 0)
+				out += metric("rtsp_sessions_inbound_rtp_packets_lost", "", 0)
+				out += metric("rtsp_sessions_inbound_rtp_packets_in_error", "", 0)
+				out += metricFloat("rtsp_sessions_inbound_rtp_packets_jitter", "", 0)
+				out += metric("rtsp_sessions_inbound_rtcp_packets", "", 0)
+				out += metric("rtsp_sessions_inbound_rtcp_packets_in_error", "", 0)
+				out += metric("rtsp_sessions_outbound_bytes", "", 0)
+				out += metric("rtsp_sessions_outbound_rtp_packets", "", 0)
+				out += metric("rtsp_sessions_outbound_rtp_packets_reported_lost", "", 0)
+				out += metric("rtsp_sessions_outbound_rtp_packets_discarded", "", 0)
+				out += metric("rtsp_sessions_outbound_rtcp_packets", "", 0)
+				// deprecated
 				out += metric("rtsp_sessions_bytes_received", "", 0)
 				out += metric("rtsp_sessions_bytes_sent", "", 0)
 				out += metric("rtsp_sessions_rtp_packets_received", "", 0)
@@ -328,12 +377,18 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 							"id": i.ID.String(),
 						})
 						out += metric("rtsps_conns", ta, 1)
+						out += metric("rtsps_conns_inbound_bytes", ta, int64(i.InboundBytes))
+						out += metric("rtsps_conns_outbound_bytes", ta, int64(i.OutboundBytes))
+						// deprecated
 						out += metric("rtsps_conns_bytes_received", ta, int64(i.BytesReceived))
 						out += metric("rtsps_conns_bytes_sent", ta, int64(i.BytesSent))
 					}
 				}
 			} else if rtspsConnFilter == "" {
 				out += metric("rtsps_conns", "", 0)
+				out += metric("rtsps_conns_inbound_bytes", "", 0)
+				out += metric("rtsps_conns_outbound_bytes", "", 0)
+				// deprecated
 				out += metric("rtsps_conns_bytes_received", "", 0)
 				out += metric("rtsps_conns_bytes_sent", "", 0)
 			}
@@ -352,6 +407,19 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 							"remoteAddr": i.RemoteAddr,
 						})
 						out += metric("rtsps_sessions", ta, 1)
+						out += metric("rtsps_sessions_inbound_bytes", ta, int64(i.InboundBytes))
+						out += metric("rtsps_sessions_inbound_rtp_packets", ta, int64(i.InboundRTPPackets))
+						out += metric("rtsps_sessions_inbound_rtp_packets_lost", ta, int64(i.InboundRTPPacketsLost))
+						out += metric("rtsps_sessions_inbound_rtp_packets_in_error", ta, int64(i.InboundRTPPacketsInError))
+						out += metricFloat("rtsps_sessions_inbound_rtp_packets_jitter", ta, i.InboundRTPPacketsJitter)
+						out += metric("rtsps_sessions_inbound_rtcp_packets", ta, int64(i.InboundRTCPPackets))
+						out += metric("rtsps_sessions_inbound_rtcp_packets_in_error", ta, int64(i.InboundRTCPPacketsInError))
+						out += metric("rtsps_sessions_outbound_bytes", ta, int64(i.OutboundBytes))
+						out += metric("rtsps_sessions_outbound_rtp_packets", ta, int64(i.OutboundRTPPackets))
+						out += metric("rtsps_sessions_outbound_rtp_packets_reported_lost", ta, int64(i.OutboundRTPPacketsReportedLost))
+						out += metric("rtsps_sessions_outbound_rtp_packets_discarded", ta, int64(i.OutboundRTPPacketsDiscarded))
+						out += metric("rtsps_sessions_outbound_rtcp_packets", ta, int64(i.OutboundRTCPPackets))
+						// deprecated
 						out += metric("rtsps_sessions_bytes_received", ta, int64(i.BytesReceived))
 						out += metric("rtsps_sessions_bytes_sent", ta, int64(i.BytesSent))
 						out += metric("rtsps_sessions_rtp_packets_received", ta, int64(i.RTPPacketsReceived))
@@ -366,6 +434,19 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 				}
 			} else if rtspsSessionFilter == "" {
 				out += metric("rtsps_sessions", "", 0)
+				out += metric("rtsps_sessions_inbound_bytes", "", 0)
+				out += metric("rtsps_sessions_inbound_rtp_packets", "", 0)
+				out += metric("rtsps_sessions_inbound_rtp_packets_lost", "", 0)
+				out += metric("rtsps_sessions_inbound_rtp_packets_in_error", "", 0)
+				out += metricFloat("rtsps_sessions_inbound_rtp_packets_jitter", "", 0)
+				out += metric("rtsps_sessions_inbound_rtcp_packets", "", 0)
+				out += metric("rtsps_sessions_inbound_rtcp_packets_in_error", "", 0)
+				out += metric("rtsps_sessions_outbound_bytes", "", 0)
+				out += metric("rtsps_sessions_outbound_rtp_packets", "", 0)
+				out += metric("rtsps_sessions_outbound_rtp_packets_reported_lost", "", 0)
+				out += metric("rtsps_sessions_outbound_rtp_packets_discarded", "", 0)
+				out += metric("rtsps_sessions_outbound_rtcp_packets", "", 0)
+				// deprecated
 				out += metric("rtsps_sessions_bytes_received", "", 0)
 				out += metric("rtsps_sessions_bytes_sent", "", 0)
 				out += metric("rtsps_sessions_rtp_packets_received", "", 0)
@@ -395,12 +476,20 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 						"remoteAddr": i.RemoteAddr,
 					})
 					out += metric("rtmp_conns", ta, 1)
+					out += metric("rtmp_conns_inbound_bytes", ta, int64(i.InboundBytes))
+					out += metric("rtmp_conns_outbound_bytes", ta, int64(i.OutboundBytes))
+					out += metric("rtmp_conns_outbound_frames_discarded", ta, int64(i.OutboundFramesDiscarded))
+					// deprecated
 					out += metric("rtmp_conns_bytes_received", ta, int64(i.BytesReceived))
 					out += metric("rtmp_conns_bytes_sent", ta, int64(i.BytesSent))
 				}
 			}
 		} else if rtmpConnFilter == "" {
 			out += metric("rtmp_conns", "", 0)
+			out += metric("rtmp_conns_inbound_bytes", "", 0)
+			out += metric("rtmp_conns_outbound_bytes", "", 0)
+			out += metric("rtmp_conns_outbound_frames_discarded", "", 0)
+			// deprecated
 			out += metric("rtmp_conns_bytes_received", "", 0)
 			out += metric("rtmp_conns_bytes_sent", "", 0)
 		}
@@ -421,12 +510,20 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 						"remoteAddr": i.RemoteAddr,
 					})
 					out += metric("rtmps_conns", ta, 1)
+					out += metric("rtmps_conns_inbound_bytes", ta, int64(i.InboundBytes))
+					out += metric("rtmps_conns_outbound_bytes", ta, int64(i.OutboundBytes))
+					out += metric("rtmps_conns_outbound_frames_discarded", ta, int64(i.OutboundFramesDiscarded))
+					// deprecated
 					out += metric("rtmps_conns_bytes_received", ta, int64(i.BytesReceived))
 					out += metric("rtmps_conns_bytes_sent", ta, int64(i.BytesSent))
 				}
 			}
 		} else if rtmpsConnFilter == "" {
 			out += metric("rtmps_conns", "", 0)
+			out += metric("rtmps_conns_inbound_bytes", "", 0)
+			out += metric("rtmps_conns_outbound_bytes", "", 0)
+			out += metric("rtmps_conns_outbound_frames_discarded", "", 0)
+			// deprecated
 			out += metric("rtmps_conns_bytes_received", "", 0)
 			out += metric("rtmps_conns_bytes_sent", "", 0)
 		}
@@ -462,6 +559,7 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 					out += metric("srt_conns_packets_sent_km", ta, int64(i.PacketsSentKM))
 					out += metric("srt_conns_packets_received_km", ta, int64(i.PacketsReceivedKM))
 					out += metric("srt_conns_us_snd_duration", ta, int64(i.UsSndDuration))
+					out += metric("srt_conns_packets_received_belated", ta, int64(i.PacketsReceivedBelated))
 					out += metric("srt_conns_packets_send_drop", ta, int64(i.PacketsSendDrop))
 					out += metric("srt_conns_packets_received_drop", ta, int64(i.PacketsReceivedDrop))
 					out += metric("srt_conns_packets_received_undecrypt", ta, int64(i.PacketsReceivedUndecrypt))
@@ -472,6 +570,7 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 					out += metric("srt_conns_bytes_received_loss", ta, int64(i.BytesReceivedLoss))
 					out += metric("srt_conns_bytes_retrans", ta, int64(i.BytesRetrans))
 					out += metric("srt_conns_bytes_received_retrans", ta, int64(i.BytesReceivedRetrans))
+					out += metric("srt_conns_bytes_received_belated", ta, int64(i.BytesReceivedBelated))
 					out += metric("srt_conns_bytes_send_drop", ta, int64(i.BytesSendDrop))
 					out += metric("srt_conns_bytes_received_drop", ta, int64(i.BytesReceivedDrop))
 					out += metric("srt_conns_bytes_received_undecrypt", ta, int64(i.BytesReceivedUndecrypt))
@@ -498,6 +597,7 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 					out += metric("srt_conns_packets_received_avg_belated_time", ta, int64(i.PacketsReceivedAvgBelatedTime))
 					out += metricFloat("srt_conns_packets_send_loss_rate", ta, i.PacketsSendLossRate)
 					out += metricFloat("srt_conns_packets_received_loss_rate", ta, i.PacketsReceivedLossRate)
+					out += metric("srt_conns_outbound_frames_discarded", ta, int64(i.OutboundFramesDiscarded))
 				}
 			}
 		} else if srtConnFilter == "" {
@@ -517,6 +617,7 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 			out += metric("srt_conns_packets_sent_km", "", 0)
 			out += metric("srt_conns_packets_received_km", "", 0)
 			out += metric("srt_conns_us_snd_duration", "", 0)
+			out += metric("srt_conns_packets_received_belated", "", 0)
 			out += metric("srt_conns_packets_send_drop", "", 0)
 			out += metric("srt_conns_packets_received_drop", "", 0)
 			out += metric("srt_conns_packets_received_undecrypt", "", 0)
@@ -527,6 +628,7 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 			out += metric("srt_conns_bytes_received_loss", "", 0)
 			out += metric("srt_conns_bytes_retrans", "", 0)
 			out += metric("srt_conns_bytes_received_retrans", "", 0)
+			out += metric("srt_conns_bytes_received_belated", "", 0)
 			out += metric("srt_conns_bytes_send_drop", "", 0)
 			out += metric("srt_conns_bytes_received_drop", "", 0)
 			out += metric("srt_conns_bytes_received_undecrypt", "", 0)
@@ -553,6 +655,7 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 			out += metric("srt_conns_packets_received_avg_belated_time", "", 0)
 			out += metricFloat("srt_conns_packets_send_loss_rate", "", 0)
 			out += metricFloat("srt_conns_packets_received_loss_rate", "", 0)
+			out += metric("srt_conns_outbound_frames_discarded", "", 0)
 		}
 	}
 
@@ -571,6 +674,16 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 						"remoteAddr": i.RemoteAddr,
 					})
 					out += metric("webrtc_sessions", ta, 1)
+					out += metric("webrtc_sessions_inbound_bytes", ta, int64(i.InboundBytes))
+					out += metric("webrtc_sessions_inbound_rtp_packets", ta, int64(i.InboundRTPPackets))
+					out += metric("webrtc_sessions_inbound_rtp_packets_lost", ta, int64(i.InboundRTPPacketsLost))
+					out += metricFloat("webrtc_sessions_inbound_rtp_packets_jitter", ta, i.InboundRTPPacketsJitter)
+					out += metric("webrtc_sessions_inbound_rtcp_packets", ta, int64(i.InboundRTCPPackets))
+					out += metric("webrtc_sessions_outbound_bytes", ta, int64(i.OutboundBytes))
+					out += metric("webrtc_sessions_outbound_rtp_packets", ta, int64(i.OutboundRTPPackets))
+					out += metric("webrtc_sessions_outbound_rtcp_packets", ta, int64(i.OutboundRTCPPackets))
+					out += metric("webrtc_sessions_outbound_frames_discarded", ta, int64(i.OutboundFramesDiscarded))
+					// deprecated
 					out += metric("webrtc_sessions_bytes_received", ta, int64(i.BytesReceived))
 					out += metric("webrtc_sessions_bytes_sent", ta, int64(i.BytesSent))
 					out += metric("webrtc_sessions_rtp_packets_received", ta, int64(i.RTPPacketsReceived))
@@ -583,6 +696,16 @@ func (m *Metrics) onMetrics(ctx *gin.Context) {
 			}
 		} else if webrtcSessionFilter == "" {
 			out += metric("webrtc_sessions", "", 0)
+			out += metric("webrtc_sessions_inbound_bytes", "", 0)
+			out += metric("webrtc_sessions_inbound_rtp_packets", "", 0)
+			out += metric("webrtc_sessions_inbound_rtp_packets_lost", "", 0)
+			out += metricFloat("webrtc_sessions_inbound_rtp_packets_jitter", "", 0)
+			out += metric("webrtc_sessions_inbound_rtcp_packets", "", 0)
+			out += metric("webrtc_sessions_outbound_bytes", "", 0)
+			out += metric("webrtc_sessions_outbound_rtp_packets", "", 0)
+			out += metric("webrtc_sessions_outbound_rtcp_packets", "", 0)
+			out += metric("webrtc_sessions_outbound_frames_discarded", "", 0)
+			// deprecated
 			out += metric("webrtc_sessions_bytes_received", "", 0)
 			out += metric("webrtc_sessions_bytes_sent", "", 0)
 			out += metric("webrtc_sessions_rtp_packets_received", "", 0)

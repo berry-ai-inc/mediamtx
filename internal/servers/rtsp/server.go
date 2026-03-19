@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"sort"
 	"strings"
@@ -23,7 +24,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/logger"
-	"github.com/bluenviron/mediamtx/internal/stream"
+	"github.com/bluenviron/mediamtx/internal/packetdumper"
 )
 
 // ErrConnNotFound is returned when a connection is not found.
@@ -33,20 +34,38 @@ var ErrConnNotFound = errors.New("connection not found")
 var ErrSessionNotFound = errors.New("session not found")
 
 func interfaceIsEmpty(i any) bool {
-	return reflect.ValueOf(i).Kind() != reflect.Ptr || reflect.ValueOf(i).IsNil()
+	return reflect.ValueOf(i).Kind() != reflect.Pointer || reflect.ValueOf(i).IsNil()
 }
 
 func printAddresses(srv *gortsplib.Server) string {
 	var ret []string
 
-	ret = append(ret, fmt.Sprintf("%s (TCP)", srv.RTSPAddress))
+	tmp := srv.RTSPAddress
+	if srv.TLSConfig == nil {
+		tmp += " (TCP/RTSP)"
+	} else {
+		tmp += " (TCP/RTSPS)"
+	}
+	ret = append(ret, tmp)
 
 	if srv.UDPRTPAddress != "" {
-		ret = append(ret, fmt.Sprintf("%s (UDP/RTP)", srv.UDPRTPAddress))
+		tmp = srv.UDPRTPAddress
+		if srv.TLSConfig == nil {
+			tmp += " (UDP/RTP)"
+		} else {
+			tmp += " (UDP/SRTP)"
+		}
+		ret = append(ret, tmp)
 	}
 
 	if srv.UDPRTCPAddress != "" {
-		ret = append(ret, fmt.Sprintf("%s (UDP/RTCP)", srv.UDPRTCPAddress))
+		tmp = srv.UDPRTCPAddress
+		if srv.TLSConfig == nil {
+			tmp += " (UDP/RTCP)"
+		} else {
+			tmp += " (UDP/SRTCP)"
+		}
+		ret = append(ret, tmp)
 	}
 
 	return strings.Join(ret, ", ")
@@ -58,10 +77,10 @@ type serverMetrics interface {
 }
 
 type serverPathManager interface {
-	FindPathConf(req defs.PathFindPathConfReq) (*conf.Path, error)
+	FindPathConf(req defs.PathFindPathConfReq) (*defs.PathFindPathConfRes, error)
 	Describe(req defs.PathDescribeReq) defs.PathDescribeRes
-	AddPublisher(_ defs.PathAddPublisherReq) (defs.Path, *stream.Stream, error)
-	AddReader(_ defs.PathAddReaderReq) (defs.Path, *stream.Stream, error)
+	AddPublisher(_ defs.PathAddPublisherReq) (*defs.PathAddPublisherRes, error)
+	AddReader(_ defs.PathAddReaderReq) (*defs.PathAddReaderRes, error)
 }
 
 type serverParent interface {
@@ -72,12 +91,12 @@ type serverParent interface {
 type Server struct {
 	Address             string
 	AuthMethods         []auth.VerifyMethod
+	DumpPackets         bool
 	UDPReadBufferSize   uint
 	ReadTimeout         conf.Duration
 	WriteTimeout        conf.Duration
 	WriteQueueSize      int
-	UseUDP              bool
-	UseMulticast        bool
+	RTSPTransports      conf.RTSPTransports
 	RTPAddress          string
 	RTCPAddress         string
 	MulticastIPRange    string
@@ -123,12 +142,12 @@ func (s *Server) Initialize() error {
 		AuthMethods:       s.AuthMethods,
 	}
 
-	if s.UseUDP {
+	if _, ok := s.RTSPTransports[gortsplib.ProtocolUDP]; ok {
 		s.srv.UDPRTPAddress = s.RTPAddress
 		s.srv.UDPRTCPAddress = s.RTCPAddress
 	}
 
-	if s.UseMulticast {
+	if _, ok := s.RTSPTransports[gortsplib.ProtocolUDPMulticast]; ok {
 		s.srv.MulticastIPRange = s.MulticastIPRange
 		s.srv.MulticastRTPPort = s.MulticastRTPPort
 		s.srv.MulticastRTCPPort = s.MulticastRTCPPort
@@ -146,6 +165,18 @@ func (s *Server) Initialize() error {
 		}
 
 		s.srv.TLSConfig = &tls.Config{GetCertificate: s.loader.GetCertificate()}
+	}
+
+	if s.DumpPackets {
+		s.srv.Listen = (&packetdumper.Listen{
+			Prefix: "rtsp_server_conn",
+			Listen: net.Listen,
+		}).Do
+
+		s.srv.ListenPacket = (&packetdumper.ListenPacket{
+			Prefix:       "rtsp_server_packetconn",
+			ListenPacket: net.ListenPacket,
+		}).Do
 	}
 
 	err := s.srv.Start()
@@ -374,7 +405,11 @@ func (s *Server) findSessionByUUID(uuid uuid.UUID) (*gortsplib.ServerSession, *s
 	return nil, nil
 }
 
-func (s *Server) findSessionByRSessionUnsafe(rsession *gortsplib.ServerSession) *session {
+func (s *Server) getConnByRConnUnsafe(rconn *gortsplib.ServerConn) *conn {
+	return s.conns[rconn]
+}
+
+func (s *Server) getSessionByRSessionUnsafe(rsession *gortsplib.ServerSession) *session {
 	return s.sessions[rsession]
 }
 
@@ -390,11 +425,11 @@ func (s *Server) APIConnsList() (*defs.APIRTSPConnsList, error) {
 	defer s.mutex.RUnlock()
 
 	data := &defs.APIRTSPConnsList{
-		Items: []*defs.APIRTSPConn{},
+		Items: []defs.APIRTSPConn{},
 	}
 
 	for _, c := range s.conns {
-		data.Items = append(data.Items, c.apiItem())
+		data.Items = append(data.Items, *c.apiItem())
 	}
 
 	sort.Slice(data.Items, func(i, j int) bool {
@@ -435,11 +470,11 @@ func (s *Server) APISessionsList() (*defs.APIRTSPSessionList, error) {
 	defer s.mutex.RUnlock()
 
 	data := &defs.APIRTSPSessionList{
-		Items: []*defs.APIRTSPSession{},
+		Items: []defs.APIRTSPSession{},
 	}
 
 	for _, s := range s.sessions {
-		data.Items = append(data.Items, s.apiItem())
+		data.Items = append(data.Items, *s.apiItem())
 	}
 
 	sort.Slice(data.Items, func(i, j int) bool {

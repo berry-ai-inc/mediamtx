@@ -14,6 +14,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/packetdumper"
 	"github.com/bluenviron/mediamtx/internal/protocols/rtmp"
 	"github.com/bluenviron/mediamtx/internal/protocols/tls"
 	"github.com/bluenviron/mediamtx/internal/stream"
@@ -27,6 +28,7 @@ type parent interface {
 
 // Source is a RTMP static source.
 type Source struct {
+	DumpPackets  bool
 	ReadTimeout  conf.Duration
 	WriteTimeout conf.Duration
 	Parent       parent
@@ -56,11 +58,22 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		}
 	}
 
+	dialContext := (&net.Dialer{}).DialContext
+
+	if s.DumpPackets {
+		dialContext = (&packetdumper.DialContext{
+			Prefix:      "rtmp_source_conn",
+			DialContext: dialContext,
+		}).Do
+	}
+
 	connectCtx, connectCtxCancel := context.WithTimeout(params.Context, time.Duration(s.ReadTimeout))
+
 	conn := &gortmplib.Client{
-		URL:       u,
-		TLSConfig: tls.MakeConfig(u.Hostname(), params.Conf.SourceFingerprint),
-		Publish:   false,
+		URL:         u,
+		TLSConfig:   tls.MakeConfig(u.Hostname(), params.Conf.SourceFingerprint),
+		Publish:     false,
+		DialContext: dialContext,
 	}
 	err = conn.Initialize(connectCtx)
 	connectCtxCancel()
@@ -101,9 +114,9 @@ func (s *Source) runReader(conn *gortmplib.Client) error {
 		return err
 	}
 
-	var stream *stream.Stream
+	var subStream *stream.SubStream
 
-	medias, err := rtmp.ToStream(r, &stream)
+	medias, err := rtmp.ToStream(r, &subStream)
 	if err != nil {
 		return err
 	}
@@ -113,9 +126,9 @@ func (s *Source) runReader(conn *gortmplib.Client) error {
 	}
 
 	res := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
-		Desc:               &description.Session{Medias: medias},
-		GenerateRTPPackets: true,
-		FillNTP:            true,
+		Desc:          &description.Session{Medias: medias},
+		UseRTPPackets: false,
+		ReplaceNTP:    true,
 	})
 	if res.Err != nil {
 		return res.Err
@@ -123,7 +136,7 @@ func (s *Source) runReader(conn *gortmplib.Client) error {
 
 	defer s.Parent.SetNotReady(defs.PathSourceStaticSetNotReadyReq{})
 
-	stream = res.Stream
+	subStream = res.SubStream
 
 	conn.NetConn().SetWriteDeadline(time.Time{})
 
@@ -137,9 +150,9 @@ func (s *Source) runReader(conn *gortmplib.Client) error {
 }
 
 // APISourceDescribe implements StaticSource.
-func (*Source) APISourceDescribe() defs.APIPathSourceOrReader {
-	return defs.APIPathSourceOrReader{
-		Type: "rtmpSource",
+func (*Source) APISourceDescribe() *defs.APIPathSource {
+	return &defs.APIPathSource{
+		Type: defs.APIPathSourceTypeRTMPSource,
 		ID:   "",
 	}
 }

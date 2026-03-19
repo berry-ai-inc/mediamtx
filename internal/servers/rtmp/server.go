@@ -18,15 +18,15 @@ import (
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/packetdumper"
 	"github.com/bluenviron/mediamtx/internal/restrictnetwork"
-	"github.com/bluenviron/mediamtx/internal/stream"
 )
 
 // ErrConnNotFound is returned when a connection is not found.
 var ErrConnNotFound = errors.New("connection not found")
 
 func interfaceIsEmpty(i any) bool {
-	return reflect.ValueOf(i).Kind() != reflect.Ptr || reflect.ValueOf(i).IsNil()
+	return reflect.ValueOf(i).Kind() != reflect.Pointer || reflect.ValueOf(i).IsNil()
 }
 
 type serverAPIConnsListRes struct {
@@ -63,8 +63,8 @@ type serverMetrics interface {
 }
 
 type serverPathManager interface {
-	AddPublisher(req defs.PathAddPublisherReq) (defs.Path, *stream.Stream, error)
-	AddReader(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error)
+	AddPublisher(req defs.PathAddPublisherReq) (*defs.PathAddPublisherRes, error)
+	AddReader(req defs.PathAddReaderReq) (*defs.PathAddReaderRes, error)
 }
 
 type serverParent interface {
@@ -74,6 +74,7 @@ type serverParent interface {
 // Server is a RTMP server.
 type Server struct {
 	Address             string
+	DumpPackets         bool
 	ReadTimeout         conf.Duration
 	WriteTimeout        conf.Duration
 	IsTLS               bool
@@ -106,31 +107,36 @@ type Server struct {
 
 // Initialize initializes the server.
 func (s *Server) Initialize() error {
-	ln, err := func() (net.Listener, error) {
-		if !s.IsTLS {
-			return net.Listen(restrictnetwork.Restrict("tcp", s.Address))
-		}
+	var err error
+	s.ln, err = net.Listen(restrictnetwork.Restrict("tcp", s.Address))
+	if err != nil {
+		return err
+	}
 
+	if s.DumpPackets {
+		s.ln = &packetdumper.Listener{
+			Prefix:   "rtmp_server_conn",
+			Listener: s.ln,
+		}
+	}
+
+	if s.IsTLS {
 		s.loader = &certloader.CertLoader{
 			CertPath: s.ServerCert,
 			KeyPath:  s.ServerKey,
 			Parent:   s.Parent,
 		}
-		err := s.loader.Initialize()
+		err = s.loader.Initialize()
 		if err != nil {
-			return nil, err
+			s.ln.Close()
+			return err
 		}
 
-		network, address := restrictnetwork.Restrict("tcp", s.Address)
-		return tls.Listen(network, address, &tls.Config{GetCertificate: s.loader.GetCertificate()})
-	}()
-	if err != nil {
-		return err
+		s.ln = tls.NewListener(s.ln, &tls.Config{GetCertificate: s.loader.GetCertificate()})
 	}
 
 	s.ctx, s.ctxCancel = context.WithCancel(context.Background())
 
-	s.ln = ln
 	s.conns = make(map[*conn]struct{})
 	s.chNewConn = make(chan net.Conn)
 	s.chAcceptErr = make(chan error)
@@ -227,11 +233,11 @@ outer:
 
 		case req := <-s.chAPIConnsList:
 			data := &defs.APIRTMPConnList{
-				Items: []*defs.APIRTMPConn{},
+				Items: []defs.APIRTMPConn{},
 			}
 
 			for c := range s.conns {
-				data.Items = append(data.Items, c.apiItem())
+				data.Items = append(data.Items, *c.apiItem())
 			}
 
 			sort.Slice(data.Items, func(i, j int) bool {

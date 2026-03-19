@@ -19,10 +19,10 @@ type Reader struct {
 	SkipBytesSent bool
 	Parent        logger.Writer
 
-	onDatas         map[*description.Media]map[format.Format]OnDataFunc
-	queueSize       int
-	buffer          *ringbuffer.RingBuffer
-	discardedFrames *counterdumper.CounterDumper
+	onDatas                 map[*description.Media]map[format.Format]OnDataFunc
+	queueSize               int
+	buffer                  *ringbuffer.RingBuffer
+	outboundFramesDiscarded *counterdumper.Dumper
 
 	// out
 	err chan error
@@ -41,15 +41,33 @@ func (r *Reader) OnData(medi *description.Media, forma format.Format, cb OnDataF
 
 // Formats returns all formats for which the reader has registered a OnData callback.
 func (r *Reader) Formats() []format.Format {
-	var out []format.Format
+	n := 0
+	for _, formats := range r.onDatas {
+		for range formats {
+			n++
+		}
+	}
+
+	if n == 0 {
+		return nil
+	}
+
+	out := make([]format.Format, n)
+	n = 0
 
 	for _, formats := range r.onDatas {
 		for forma := range formats {
-			out = append(out, forma)
+			out[n] = forma
+			n++
 		}
 	}
 
 	return out
+}
+
+// OutboundFramesDiscarded returns the number of frames discarded because the reader is too slow.
+func (r *Reader) OutboundFramesDiscarded() uint64 {
+	return r.outboundFramesDiscarded.Get()
 }
 
 // error returns whenever there's an error.
@@ -63,7 +81,7 @@ func (r *Reader) start() {
 	r.buffer = buffer
 	r.err = make(chan error)
 
-	r.discardedFrames = &counterdumper.CounterDumper{
+	r.outboundFramesDiscarded = &counterdumper.Dumper{
 		OnReport: func(val uint64) {
 			r.Parent.Log(logger.Warn, "reader is too slow, discarding %d %s",
 				val,
@@ -75,14 +93,14 @@ func (r *Reader) start() {
 				}())
 		},
 	}
-	r.discardedFrames.Start()
+	r.outboundFramesDiscarded.Start()
 
 	go r.run()
 }
 
 func (r *Reader) stop() {
 	r.buffer.Close()
-	r.discardedFrames.Stop()
+	r.outboundFramesDiscarded.Stop()
 	<-r.err
 }
 
@@ -108,6 +126,6 @@ func (r *Reader) runInner() error {
 func (r *Reader) push(cb func() error) {
 	ok := r.buffer.Push(cb)
 	if !ok {
-		r.discardedFrames.Increase()
+		r.outboundFramesDiscarded.Increase()
 	}
 }

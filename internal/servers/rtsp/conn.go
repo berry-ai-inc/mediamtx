@@ -50,7 +50,7 @@ func tunnelLabel(t gortsplib.Tunnel) string {
 
 type connParent interface {
 	logger.Writer
-	findSessionByRSessionUnsafe(rsession *gortsplib.ServerSession) *session
+	getSessionByRSessionUnsafe(rsession *gortsplib.ServerSession) *session
 }
 
 type conn struct {
@@ -78,16 +78,6 @@ func (c *conn) initialize() {
 
 	c.Log(logger.Info, "opened")
 
-	desc := defs.APIPathSourceOrReader{
-		Type: func() string {
-			if c.isTLS {
-				return "rtspsConn"
-			}
-			return "rtspConn"
-		}(),
-		ID: c.uuid.String(),
-	}
-
 	c.onDisconnectHook = hooks.OnConnect(hooks.OnConnectParams{
 		Logger:              c,
 		ExternalCmdPool:     c.externalCmdPool,
@@ -95,7 +85,15 @@ func (c *conn) initialize() {
 		RunOnConnectRestart: c.runOnConnectRestart,
 		RunOnDisconnect:     c.runOnDisconnect,
 		RTSPAddress:         c.rtspAddress,
-		Desc:                desc,
+		Desc: defs.APIPathReader{
+			Type: func() defs.APIPathReaderType {
+				if c.isTLS {
+					return defs.APIPathReaderTypeRTSPSConn
+				}
+				return defs.APIPathReaderTypeRTSPConn
+			}(),
+			ID: c.uuid.String(),
+		},
 	})
 }
 
@@ -193,16 +191,16 @@ func (c *conn) onDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx,
 		}, nil, nil
 	}
 
-	var stream *gortsplib.ServerStream
+	var strm *gortsplib.ServerStream
 	if !c.isTLS {
-		stream = res.Stream.RTSPStream(c.rserver)
+		strm = res.Stream.RTSPStream(c.rserver)
 	} else {
-		stream = res.Stream.RTSPSStream(c.rserver)
+		strm = res.Stream.RTSPSStream(c.rserver)
 	}
 
 	return &base.Response{
 		StatusCode: base.StatusOK,
-	}, stream, nil
+	}, strm, nil
 }
 
 func (c *conn) handleAuthError(err *auth.Error) (*base.Response, error) {
@@ -224,18 +222,20 @@ func (c *conn) apiItem() *defs.APIRTSPConn {
 	stats := c.rconn.Stats()
 
 	return &defs.APIRTSPConn{
-		ID:            c.uuid,
-		Created:       c.created,
-		RemoteAddr:    c.remoteAddr().String(),
-		BytesReceived: stats.BytesReceived,
-		BytesSent:     stats.BytesSent,
+		ID:         c.uuid,
+		Created:    c.created,
+		RemoteAddr: c.remoteAddr().String(),
 		Session: func() *uuid.UUID {
-			sx := c.parent.findSessionByRSessionUnsafe(c.rconn.Session())
+			sx := c.parent.getSessionByRSessionUnsafe(c.rconn.Session())
 			if sx != nil {
 				return &sx.uuid
 			}
 			return nil
 		}(),
-		Tunnel: tunnelLabel(c.rconn.Transport().Tunnel),
+		Tunnel:        tunnelLabel(c.rconn.Transport().Tunnel),
+		InboundBytes:  stats.InboundBytes,
+		OutboundBytes: stats.OutboundBytes,
+		BytesReceived: stats.InboundBytes,
+		BytesSent:     stats.OutboundBytes,
 	}
 }

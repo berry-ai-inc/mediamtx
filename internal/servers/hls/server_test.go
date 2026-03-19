@@ -26,8 +26,8 @@ import (
 
 type dummyPathManager struct {
 	setHLSServerImpl func() []defs.Path
-	findPathConfImpl func(req defs.PathFindPathConfReq) (*conf.Path, error)
-	addReaderImpl    func(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error)
+	findPathConfImpl func(req defs.PathFindPathConfReq) (*defs.PathFindPathConfRes, error)
+	addReaderImpl    func(req defs.PathAddReaderReq) (*defs.PathAddReaderRes, error)
 }
 
 func (pm *dummyPathManager) SetHLSServer(*Server) []defs.Path {
@@ -37,11 +37,11 @@ func (pm *dummyPathManager) SetHLSServer(*Server) []defs.Path {
 	return nil
 }
 
-func (pm *dummyPathManager) FindPathConf(req defs.PathFindPathConfReq) (*conf.Path, error) {
+func (pm *dummyPathManager) FindPathConf(req defs.PathFindPathConfReq) (*defs.PathFindPathConfRes, error) {
 	return pm.findPathConfImpl(req)
 }
 
-func (pm *dummyPathManager) AddReader(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error) {
+func (pm *dummyPathManager) AddReader(req defs.PathAddReaderReq) (*defs.PathAddReaderRes, error) {
 	return pm.addReaderImpl(req)
 }
 
@@ -110,13 +110,13 @@ func TestServerNotFound(t *testing.T) {
 	} {
 		t.Run(ca, func(t *testing.T) {
 			pm := &dummyPathManager{
-				findPathConfImpl: func(req defs.PathFindPathConfReq) (*conf.Path, error) {
+				findPathConfImpl: func(req defs.PathFindPathConfReq) (*defs.PathFindPathConfRes, error) {
 					require.Equal(t, "nonexisting", req.AccessRequest.Name)
-					return &conf.Path{}, nil
+					return &defs.PathFindPathConfRes{Conf: &conf.Path{}, User: req.AccessRequest.Credentials.User}, nil
 				},
-				addReaderImpl: func(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error) {
+				addReaderImpl: func(req defs.PathAddReaderReq) (*defs.PathAddReaderRes, error) {
 					require.Equal(t, "nonexisting", req.AccessRequest.Name)
-					return nil, nil, fmt.Errorf("not found")
+					return nil, fmt.Errorf("not found")
 				},
 			}
 
@@ -185,31 +185,38 @@ func TestServerRead(t *testing.T) {
 			}}
 
 			strm := &stream.Stream{
-				WriteQueueSize:     512,
-				RTPMaxPayloadSize:  1450,
-				Desc:               desc,
-				GenerateRTPPackets: true,
-				Parent:             test.NilLogger,
+				Desc:              desc,
+				WriteQueueSize:    512,
+				RTPMaxPayloadSize: 1450,
+				ReplaceNTP:        false,
+				Parent:            test.NilLogger,
 			}
 			err := strm.Initialize()
 			require.NoError(t, err)
 
+			subStream := &stream.SubStream{
+				Stream:        strm,
+				UseRTPPackets: false,
+			}
+			err = subStream.Initialize()
+			require.NoError(t, err)
+
 			pm := &dummyPathManager{
-				findPathConfImpl: func(req defs.PathFindPathConfReq) (*conf.Path, error) {
+				findPathConfImpl: func(req defs.PathFindPathConfReq) (*defs.PathFindPathConfRes, error) {
 					require.Equal(t, "teststream", req.AccessRequest.Name)
 					require.Equal(t, "param=value", req.AccessRequest.Query)
 					require.Equal(t, "myuser", req.AccessRequest.Credentials.User)
 					require.Equal(t, "mypass", req.AccessRequest.Credentials.Pass)
-					return &conf.Path{}, nil
+					return &defs.PathFindPathConfRes{Conf: &conf.Path{}, User: req.AccessRequest.Credentials.User}, nil
 				},
-				addReaderImpl: func(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error) {
+				addReaderImpl: func(req defs.PathAddReaderReq) (*defs.PathAddReaderRes, error) {
 					require.Equal(t, "teststream", req.AccessRequest.Name)
 					if ca == "always remux off" {
 						require.Equal(t, "param=value", req.AccessRequest.Query)
 					} else {
 						require.Equal(t, "", req.AccessRequest.Query)
 					}
-					return &dummyPath{}, strm, nil
+					return &defs.PathAddReaderRes{Path: &dummyPath{}, Stream: strm}, nil
 				},
 			}
 
@@ -234,7 +241,8 @@ func TestServerRead(t *testing.T) {
 				defer s.Close()
 
 				c := &gohlslib.Client{
-					URI: "http://myuser:mypass@127.0.0.1:8888/teststream/index.m3u8?param=value",
+					URI:           "http://myuser:mypass@127.0.0.1:8888/teststream/index.m3u8?param=value",
+					StartDistance: 1,
 				}
 
 				recv1 := make(chan struct{})
@@ -249,9 +257,10 @@ func TestServerRead(t *testing.T) {
 						{
 							Codec: &codecs.MPEG4Audio{
 								Config: mpeg4audio.AudioSpecificConfig{
-									Type:         2,
-									ChannelCount: 2,
-									SampleRate:   44100,
+									Type:          2,
+									ChannelCount:  2,
+									ChannelConfig: 2,
+									SampleRate:    44100,
 								},
 							},
 							ClockRate: 90000,
@@ -282,17 +291,17 @@ func TestServerRead(t *testing.T) {
 				require.NoError(t, err)
 				defer c.Close()
 
-				time.Sleep(100 * time.Millisecond)
+				strm.WaitForReaders()
 
-				for i := range 4 {
-					strm.WriteUnit(test.MediaH264, test.FormatH264, &unit.Unit{
+				for i := range 2 {
+					subStream.WriteUnit(test.MediaH264, test.FormatH264, &unit.Unit{
 						NTP: time.Time{},
 						PTS: int64(i) * 90000,
 						Payload: unit.PayloadH264{
 							{5, 1}, // IDR
 						},
 					})
-					strm.WriteUnit(test.MediaMPEG4Audio, test.FormatMPEG4Audio, &unit.Unit{
+					subStream.WriteUnit(test.MediaMPEG4Audio, test.FormatMPEG4Audio, &unit.Unit{
 						NTP:     time.Time{},
 						PTS:     int64(i) * 44100,
 						Payload: unit.PayloadMPEG4Audio{{1, 2}},
@@ -323,27 +332,26 @@ func TestServerRead(t *testing.T) {
 
 				s.PathReady(&dummyPath{})
 
-				time.Sleep(500 * time.Millisecond)
+				strm.WaitForReaders()
 
-				for i := range 4 {
-					strm.WriteUnit(test.MediaH264, test.FormatH264, &unit.Unit{
+				for i := range 2 {
+					subStream.WriteUnit(test.MediaH264, test.FormatH264, &unit.Unit{
 						NTP: time.Time{},
 						PTS: int64(i) * 90000,
 						Payload: unit.PayloadH264{
 							{5, 1}, // IDR
 						},
 					})
-					strm.WriteUnit(test.MediaMPEG4Audio, test.FormatMPEG4Audio, &unit.Unit{
+					subStream.WriteUnit(test.MediaMPEG4Audio, test.FormatMPEG4Audio, &unit.Unit{
 						NTP:     time.Time{},
 						PTS:     int64(i) * 44100,
 						Payload: unit.PayloadMPEG4Audio{{1, 2}},
 					})
 				}
 
-				time.Sleep(100 * time.Millisecond)
-
 				c := &gohlslib.Client{
-					URI: "http://myuser:mypass@127.0.0.1:8888/teststream/index.m3u8?param=value",
+					URI:           "http://myuser:mypass@127.0.0.1:8888/teststream/index.m3u8?param=value",
+					StartDistance: 1,
 				}
 
 				recv1 := make(chan struct{})
@@ -358,9 +366,10 @@ func TestServerRead(t *testing.T) {
 						{
 							Codec: &codecs.MPEG4Audio{
 								Config: mpeg4audio.AudioSpecificConfig{
-									Type:         2,
-									ChannelCount: 2,
-									SampleRate:   44100,
+									Type:          2,
+									ChannelCount:  2,
+									ChannelConfig: 2,
+									SampleRate:    44100,
 								},
 							},
 							ClockRate: 90000,
@@ -406,18 +415,24 @@ func TestServerDirectory(t *testing.T) {
 	desc := &description.Session{Medias: []*description.Media{test.MediaH264}}
 
 	strm := &stream.Stream{
-		WriteQueueSize:     512,
-		RTPMaxPayloadSize:  1450,
-		Desc:               desc,
-		GenerateRTPPackets: true,
-		Parent:             test.NilLogger,
+		Desc:              desc,
+		WriteQueueSize:    512,
+		RTPMaxPayloadSize: 1450,
+		Parent:            test.NilLogger,
 	}
 	err = strm.Initialize()
 	require.NoError(t, err)
 
+	subStream := &stream.SubStream{
+		Stream:        strm,
+		UseRTPPackets: false,
+	}
+	err = subStream.Initialize()
+	require.NoError(t, err)
+
 	pm := &dummyPathManager{
-		addReaderImpl: func(_ defs.PathAddReaderReq) (defs.Path, *stream.Stream, error) {
-			return &dummyPath{}, strm, nil
+		addReaderImpl: func(_ defs.PathAddReaderReq) (*defs.PathAddReaderRes, error) {
+			return &defs.PathAddReaderRes{Path: &dummyPath{}, Stream: strm}, nil
 		},
 	}
 
@@ -455,13 +470,19 @@ func TestServerDynamicAlwaysRemux(t *testing.T) {
 	desc := &description.Session{Medias: []*description.Media{test.MediaH264}}
 
 	strm := &stream.Stream{
-		WriteQueueSize:     512,
-		RTPMaxPayloadSize:  1450,
-		Desc:               desc,
-		GenerateRTPPackets: true,
-		Parent:             test.NilLogger,
+		Desc:              desc,
+		WriteQueueSize:    512,
+		RTPMaxPayloadSize: 1450,
+		Parent:            test.NilLogger,
 	}
 	err := strm.Initialize()
+	require.NoError(t, err)
+
+	subStream := &stream.SubStream{
+		Stream:        strm,
+		UseRTPPackets: false,
+	}
+	err = subStream.Initialize()
 	require.NoError(t, err)
 
 	done := make(chan struct{})
@@ -470,9 +491,9 @@ func TestServerDynamicAlwaysRemux(t *testing.T) {
 		setHLSServerImpl: func() []defs.Path {
 			return []defs.Path{&dummyPath{}}
 		},
-		addReaderImpl: func(_ defs.PathAddReaderReq) (defs.Path, *stream.Stream, error) {
+		addReaderImpl: func(_ defs.PathAddReaderReq) (*defs.PathAddReaderRes, error) {
 			close(done)
-			return &dummyPath{}, strm, nil
+			return &defs.PathAddReaderRes{Path: &dummyPath{}, Stream: strm}, nil
 		},
 	}
 
@@ -516,9 +537,9 @@ func TestAuthError(t *testing.T) {
 		ReadTimeout:     conf.Duration(10 * time.Second),
 		WriteTimeout:    conf.Duration(10 * time.Second),
 		PathManager: &dummyPathManager{
-			findPathConfImpl: func(req defs.PathFindPathConfReq) (*conf.Path, error) {
+			findPathConfImpl: func(req defs.PathFindPathConfReq) (*defs.PathFindPathConfRes, error) {
 				if req.AccessRequest.Credentials.User == "" && req.AccessRequest.Credentials.Pass == "" {
-					return nil, &auth.Error{AskCredentials: true}
+					return nil, &auth.Error{AskCredentials: true, Wrapped: fmt.Errorf("auth error")}
 				}
 
 				return nil, &auth.Error{Wrapped: fmt.Errorf("auth error")}

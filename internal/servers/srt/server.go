@@ -17,14 +17,13 @@ import (
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/logger"
-	"github.com/bluenviron/mediamtx/internal/stream"
 )
 
 // ErrConnNotFound is returned when a connection is not found.
 var ErrConnNotFound = errors.New("connection not found")
 
 func interfaceIsEmpty(i any) bool {
-	return reflect.ValueOf(i).Kind() != reflect.Ptr || reflect.ValueOf(i).IsNil()
+	return reflect.ValueOf(i).Kind() != reflect.Pointer || reflect.ValueOf(i).IsNil()
 }
 
 func srtMaxPayloadSize(u int) int {
@@ -64,9 +63,9 @@ type serverMetrics interface {
 }
 
 type serverPathManager interface {
-	FindPathConf(req defs.PathFindPathConfReq) (*conf.Path, error)
-	AddPublisher(req defs.PathAddPublisherReq) (defs.Path, *stream.Stream, error)
-	AddReader(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error)
+	FindPathConf(req defs.PathFindPathConfReq) (*defs.PathFindPathConfRes, error)
+	AddPublisher(req defs.PathAddPublisherReq) (*defs.PathAddPublisherRes, error)
+	AddReader(req defs.PathAddReaderReq) (*defs.PathAddReaderRes, error)
 }
 
 type serverParent interface {
@@ -107,6 +106,7 @@ type Server struct {
 func (s *Server) Initialize() error {
 	conf := srt.DefaultConfig()
 	conf.ConnectionTimeout = time.Duration(s.ReadTimeout)
+	conf.PeerIdleTimeout = time.Duration(s.ReadTimeout)
 	conf.PayloadSize = uint32(srtMaxPayloadSize(s.UDPMaxPayloadSize))
 
 	var err error
@@ -195,11 +195,11 @@ outer:
 
 		case req := <-s.chAPIConnsList:
 			data := &defs.APISRTConnList{
-				Items: []*defs.APISRTConn{},
+				Items: []defs.APISRTConn{},
 			}
 
 			for c := range s.conns {
-				data.Items = append(data.Items, c.apiItem())
+				data.Items = append(data.Items, *c.apiItem())
 			}
 
 			sort.Slice(data.Items, func(i, j int) bool {

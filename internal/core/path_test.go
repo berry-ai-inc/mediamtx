@@ -789,30 +789,30 @@ func TestPathFallback(t *testing.T) {
 		"source",
 	} {
 		t.Run(ca, func(t *testing.T) {
-			var conf string
+			var cnf string
 
 			switch ca {
 			case "absolute":
-				conf = "paths:\n" +
+				cnf = "paths:\n" +
 					"  path1:\n" +
 					"    fallback: rtsp://localhost:8554/path2\n" +
 					"  path2:\n"
 
 			case "relative":
-				conf = "paths:\n" +
+				cnf = "paths:\n" +
 					"  path1:\n" +
 					"    fallback: /path2\n" +
 					"  path2:\n"
 
 			case "source":
-				conf = "paths:\n" +
+				cnf = "paths:\n" +
 					"  path1:\n" +
 					"    fallback: /path2\n" +
 					"    source: rtsp://localhost:3333/nonexistent\n" +
 					"  path2:\n"
 			}
 
-			p1, ok := newInstance(conf)
+			p1, ok := newInstance(cnf)
 			require.Equal(t, true, ok)
 			defer p1.Close()
 
@@ -842,7 +842,7 @@ func TestPathFallback(t *testing.T) {
 }
 
 func TestPathResolveSource(t *testing.T) {
-	var stream *gortsplib.ServerStream
+	var strm *gortsplib.ServerStream
 
 	s := gortsplib.Server{
 		Handler: &testServer{
@@ -852,12 +852,12 @@ func TestPathResolveSource(t *testing.T) {
 				require.Equal(t, "/a", ctx.Path)
 				return &base.Response{
 					StatusCode: base.StatusOK,
-				}, stream, nil
+				}, strm, nil
 			},
 			onSetup: func(_ *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
 				return &base.Response{
 					StatusCode: base.StatusOK,
-				}, stream, nil
+				}, strm, nil
 			},
 			onPlay: func(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
 				return &base.Response{
@@ -872,13 +872,13 @@ func TestPathResolveSource(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	stream = &gortsplib.ServerStream{
+	strm = &gortsplib.ServerStream{
 		Server: &s,
 		Desc:   &description.Session{Medias: []*description.Media{test.MediaH264}},
 	}
-	err = stream.Initialize()
+	err = strm.Initialize()
 	require.NoError(t, err)
-	defer stream.Close()
+	defer strm.Close()
 
 	p, ok := newInstance(
 		"paths:\n" +
@@ -911,15 +911,15 @@ func TestPathOverridePublisher(t *testing.T) {
 		"disabled",
 	} {
 		t.Run(ca, func(t *testing.T) {
-			conf := "rtmp: no\n" +
+			cnf := "rtmp: no\n" +
 				"paths:\n" +
 				"  all_others:\n"
 
 			if ca == "disabled" {
-				conf += "    overridePublisher: no\n"
+				cnf += "    overridePublisher: no\n"
 			}
 
-			p, ok := newInstance(conf)
+			p, ok := newInstance(cnf)
 			require.Equal(t, true, ok)
 			defer p.Close()
 

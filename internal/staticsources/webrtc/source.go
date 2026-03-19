@@ -3,6 +3,7 @@ package webrtc
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/packetdumper"
 	"github.com/bluenviron/mediamtx/internal/protocols/tls"
 	"github.com/bluenviron/mediamtx/internal/protocols/webrtc"
 	"github.com/bluenviron/mediamtx/internal/protocols/whip"
@@ -27,6 +29,7 @@ type parent interface {
 
 // Source is a WebRTC static source.
 type Source struct {
+	DumpPackets       bool
 	ReadTimeout       conf.Duration
 	UDPReadBufferSize uint
 	Parent            parent
@@ -48,7 +51,17 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 
 	u.Scheme = strings.ReplaceAll(u.Scheme, "whep", "http")
 
+	dialContext := (&net.Dialer{}).DialContext
+
+	if s.DumpPackets {
+		dialContext = (&packetdumper.DialContext{
+			Prefix:      "webrtc_source_conn",
+			DialContext: dialContext,
+		}).Do
+	}
+
 	tr := &http.Transport{
+		DialContext:     dialContext,
 		TLSClientConfig: tls.MakeConfig(u.Hostname(), params.Conf.SourceFingerprint),
 	}
 	defer tr.CloseIdleConnections()
@@ -59,26 +72,30 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 			Timeout:   time.Duration(s.ReadTimeout),
 			Transport: tr,
 		},
-		UDPReadBufferSize: s.UDPReadBufferSize,
-		Log:               s,
+		BearerToken:        params.Conf.WHEPBearerToken,
+		UDPReadBufferSize:  s.UDPReadBufferSize,
+		STUNGatherTimeout:  time.Duration(params.Conf.WHEPSTUNGatherTimeout),
+		HandshakeTimeout:   time.Duration(params.Conf.WHEPHandshakeTimeout),
+		TrackGatherTimeout: time.Duration(params.Conf.WHEPTrackGatherTimeout),
+		Log:                s,
 	}
 	err = client.Initialize(params.Context)
 	if err != nil {
 		return err
 	}
 
-	var stream *stream.Stream
+	var subStream *stream.SubStream
 
-	medias, err := webrtc.ToStream(client.PeerConnection(), params.Conf, &stream, s)
+	medias, err := webrtc.ToStream(client.PeerConnection(), params.Conf, &subStream, s)
 	if err != nil {
 		client.Close() //nolint:errcheck
 		return err
 	}
 
 	rres := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
-		Desc:               &description.Session{Medias: medias},
-		GenerateRTPPackets: true,
-		FillNTP:            !params.Conf.UseAbsoluteTimestamp,
+		Desc:          &description.Session{Medias: medias},
+		UseRTPPackets: true,
+		ReplaceNTP:    !params.Conf.UseAbsoluteTimestamp,
 	})
 	if rres.Err != nil {
 		client.Close() //nolint:errcheck
@@ -87,7 +104,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 
 	defer s.Parent.SetNotReady(defs.PathSourceStaticSetNotReadyReq{})
 
-	stream = rres.Stream
+	subStream = rres.SubStream
 
 	client.StartReading()
 
@@ -114,9 +131,9 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 }
 
 // APISourceDescribe implements StaticSource.
-func (*Source) APISourceDescribe() defs.APIPathSourceOrReader {
-	return defs.APIPathSourceOrReader{
-		Type: "webRTCSource",
+func (*Source) APISourceDescribe() *defs.APIPathSource {
+	return &defs.APIPathSource{
+		Type: defs.APIPathSourceTypeWebRTCSource,
 		ID:   "",
 	}
 }

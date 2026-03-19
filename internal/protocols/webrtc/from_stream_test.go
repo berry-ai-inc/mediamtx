@@ -7,10 +7,10 @@ import (
 
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
-	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/stream"
 	"github.com/bluenviron/mediamtx/internal/test"
+	"github.com/bluenviron/mediamtx/internal/unit"
 	"github.com/pion/rtp"
 	"github.com/stretchr/testify/require"
 )
@@ -27,7 +27,9 @@ func TestFromStreamNoSupportedCodecs(t *testing.T) {
 		}),
 	}
 
-	err := FromStream(desc, r, nil)
+	pc := &PeerConnection{}
+
+	err := FromStream(desc, r, pc)
 	require.Equal(t, errNoSupportedCodecsFrom, err)
 }
 
@@ -85,8 +87,6 @@ func TestFromStream(t *testing.T) {
 
 func TestFromStreamResampleOpus(t *testing.T) {
 	strm := &stream.Stream{
-		WriteQueueSize:    512,
-		RTPMaxPayloadSize: 1450,
 		Desc: &description.Session{Medias: []*description.Media{
 			{
 				Type: description.MediaTypeAudio,
@@ -95,31 +95,36 @@ func TestFromStreamResampleOpus(t *testing.T) {
 				}},
 			},
 		}},
-		GenerateRTPPackets: true,
-		Parent:             test.NilLogger,
+		WriteQueueSize:    512,
+		RTPMaxPayloadSize: 1450,
+		ReplaceNTP:        false,
+		Parent:            test.NilLogger,
 	}
 	err := strm.Initialize()
 	require.NoError(t, err)
 
+	subStream := &stream.SubStream{
+		Stream:        strm,
+		UseRTPPackets: true,
+	}
+	err = subStream.Initialize()
+	require.NoError(t, err)
+
 	pc1 := &PeerConnection{
-		LocalRandomUDP:     true,
-		IPsFromInterfaces:  true,
-		HandshakeTimeout:   conf.Duration(10 * time.Second),
-		TrackGatherTimeout: conf.Duration(2 * time.Second),
-		Publish:            false,
-		Log:                test.NilLogger,
+		LocalRandomUDP:    true,
+		IPsFromInterfaces: true,
+		Publish:           false,
+		Log:               test.NilLogger,
 	}
 	err = pc1.Start()
 	require.NoError(t, err)
 	defer pc1.Close()
 
 	pc2 := &PeerConnection{
-		LocalRandomUDP:     true,
-		IPsFromInterfaces:  true,
-		HandshakeTimeout:   conf.Duration(10 * time.Second),
-		TrackGatherTimeout: conf.Duration(2 * time.Second),
-		Publish:            true,
-		Log:                test.NilLogger,
+		LocalRandomUDP:    true,
+		IPsFromInterfaces: true,
+		Publish:           true,
+		Log:               test.NilLogger,
 	}
 
 	r := &stream.Reader{Parent: nil}
@@ -140,40 +145,48 @@ func TestFromStreamResampleOpus(t *testing.T) {
 	err = pc1.SetAnswer(answer)
 	require.NoError(t, err)
 
-	err = pc1.WaitUntilConnected()
+	err = pc1.WaitUntilConnected(10 * time.Second)
 	require.NoError(t, err)
 
-	err = pc2.WaitUntilConnected()
+	err = pc2.WaitUntilConnected(10 * time.Second)
 	require.NoError(t, err)
 
 	strm.AddReader(r)
 	defer strm.RemoveReader(r)
 
-	strm.WriteRTPPacket(strm.Desc.Medias[0], strm.Desc.Medias[0].Formats[0], &rtp.Packet{
-		Header: rtp.Header{
-			Version:        2,
-			Marker:         true,
-			PayloadType:    111,
-			SequenceNumber: 1123,
-			Timestamp:      45343,
-			SSRC:           563424,
-		},
-		Payload: []byte{1},
-	}, time.Now(), 0)
+	subStream.WriteUnit(strm.Desc.Medias[0], strm.Desc.Medias[0].Formats[0], &unit.Unit{
+		PTS: 0,
+		NTP: time.Now(),
+		RTPPackets: []*rtp.Packet{{
+			Header: rtp.Header{
+				Version:        2,
+				Marker:         true,
+				PayloadType:    111,
+				SequenceNumber: 1123,
+				Timestamp:      45343,
+				SSRC:           563424,
+			},
+			Payload: []byte{1},
+		}},
+	})
 
-	strm.WriteRTPPacket(strm.Desc.Medias[0], strm.Desc.Medias[0].Formats[0], &rtp.Packet{
-		Header: rtp.Header{
-			Version:        2,
-			Marker:         true,
-			PayloadType:    111,
-			SequenceNumber: 1124,
-			Timestamp:      45343,
-			SSRC:           563424,
-		},
-		Payload: []byte{1},
-	}, time.Now(), 0)
+	subStream.WriteUnit(strm.Desc.Medias[0], strm.Desc.Medias[0].Formats[0], &unit.Unit{
+		PTS: 0,
+		NTP: time.Now(),
+		RTPPackets: []*rtp.Packet{{
+			Header: rtp.Header{
+				Version:        2,
+				Marker:         true,
+				PayloadType:    111,
+				SequenceNumber: 1124,
+				Timestamp:      45343,
+				SSRC:           563424,
+			},
+			Payload: []byte{1},
+		}},
+	})
 
-	err = pc1.GatherIncomingTracks()
+	err = pc1.GatherIncomingTracks(2 * time.Second)
 	require.NoError(t, err)
 
 	tracks := pc1.IncomingTracks()

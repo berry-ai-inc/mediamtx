@@ -12,6 +12,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/stream"
+	"github.com/bluenviron/mediamtx/internal/unit"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 )
@@ -32,7 +33,7 @@ var errNoSupportedCodecsTo = errors.New(
 func ToStream(
 	pc *PeerConnection,
 	pathConf *conf.Path,
-	strm **stream.Stream,
+	subStream **stream.SubStream,
 	log logger.Writer,
 ) ([]*description.Media, error) {
 	var medias []*description.Media //nolint:prealloc
@@ -47,45 +48,45 @@ func ToStream(
 		case strings.ToLower(webrtc.MimeTypeAV1):
 			typ = description.MediaTypeVideo
 			forma = &format.AV1{
-				PayloadTyp: uint8(track.track.PayloadType()),
+				PayloadTyp: 96,
 			}
 
 		case strings.ToLower(webrtc.MimeTypeVP9):
 			typ = description.MediaTypeVideo
 			forma = &format.VP9{
-				PayloadTyp: uint8(track.track.PayloadType()),
+				PayloadTyp: 96,
 			}
 
 		case strings.ToLower(webrtc.MimeTypeVP8):
 			typ = description.MediaTypeVideo
 			forma = &format.VP8{
-				PayloadTyp: uint8(track.track.PayloadType()),
+				PayloadTyp: 96,
 			}
 
 		case strings.ToLower(webrtc.MimeTypeH265):
 			typ = description.MediaTypeVideo
 			forma = &format.H265{
-				PayloadTyp: uint8(track.track.PayloadType()),
+				PayloadTyp: 96,
 			}
 
 		case strings.ToLower(webrtc.MimeTypeH264):
 			typ = description.MediaTypeVideo
 			forma = &format.H264{
-				PayloadTyp:        uint8(track.track.PayloadType()),
+				PayloadTyp:        96,
 				PacketizationMode: 1,
 			}
 
 		case strings.ToLower(mimeTypeMultiopus):
 			typ = description.MediaTypeAudio
 			forma = &format.Opus{
-				PayloadTyp:   uint8(track.track.PayloadType()),
+				PayloadTyp:   96,
 				ChannelCount: int(track.track.Codec().Channels),
 			}
 
 		case strings.ToLower(webrtc.MimeTypeOpus):
 			typ = description.MediaTypeAudio
 			forma = &format.Opus{
-				PayloadTyp: uint8(track.track.PayloadType()),
+				PayloadTyp: 96,
 				ChannelCount: func() int {
 					if strings.Contains(track.track.Codec().SDPFmtpLine, "stereo=1") {
 						return 2
@@ -108,7 +109,7 @@ func ToStream(
 			forma = &format.G711{
 				PayloadTyp: func() uint8 {
 					if channels > 1 {
-						return 118
+						return 96
 					}
 					return 0
 				}(),
@@ -127,7 +128,7 @@ func ToStream(
 			forma = &format.G711{
 				PayloadTyp: func() uint8 {
 					if channels > 1 {
-						return 119
+						return 96
 					}
 					return 8
 				}(),
@@ -139,7 +140,7 @@ func ToStream(
 		case strings.ToLower(mimeTypeL16):
 			typ = description.MediaTypeAudio
 			forma = &format.LPCM{
-				PayloadTyp:   uint8(track.track.PayloadType()),
+				PayloadTyp:   96,
 				BitDepth:     16,
 				SampleRate:   int(track.track.Codec().ClockRate),
 				ChannelCount: int(track.track.Codec().Channels),
@@ -186,6 +187,8 @@ func ToStream(
 		}
 
 		track.OnPacketRTP = func(pkt *rtp.Packet) {
+			pkt.PayloadType = forma.PayloadType()
+
 			pts, ok := timeDecoder.Decode(track, pkt)
 			if !ok {
 				return
@@ -196,7 +199,11 @@ func ToStream(
 				return
 			}
 
-			(*strm).WriteRTPPacket(medi, forma, pkt, ntp, pts)
+			(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				PTS:        pts,
+				NTP:        ntp,
+				RTPPackets: []*rtp.Packet{pkt},
+			})
 		}
 
 		medias = append(medias, medi)

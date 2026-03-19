@@ -2,7 +2,6 @@
 package httpp
 
 import (
-	"context"
 	"crypto/tls"
 	"fmt"
 	"log"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/bluenviron/mediamtx/internal/certloader"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/packetdumper"
 	"github.com/bluenviron/mediamtx/internal/restrictnetwork"
 )
 
@@ -31,19 +31,22 @@ func (nilWriter) Write(p []byte) (int, error) {
 // - server header
 // - filtering of invalid requests
 type Server struct {
-	Address      string
-	AllowOrigins []string
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	Encryption   bool
-	ServerCert   string
-	ServerKey    string
-	Handler      http.Handler
-	Parent       logger.Writer
+	Address           string
+	AllowOrigins      []string
+	DumpPackets       bool
+	DumpPacketsPrefix string
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	Encryption        bool
+	ServerCert        string
+	ServerKey         string
+	Handler           http.Handler
+	Parent            logger.Writer
 
-	ln     net.Listener
-	inner  *http.Server
-	loader *certloader.CertLoader
+	ln      net.Listener
+	inner   *http.Server
+	loader  *certloader.CertLoader
+	tracker *handlerTracker
 }
 
 // Initialize initializes a Server.
@@ -96,6 +99,13 @@ func (s *Server) Initialize() error {
 		return err
 	}
 
+	if s.DumpPackets {
+		s.ln = &packetdumper.Listener{
+			Prefix:   s.DumpPacketsPrefix,
+			Listener: s.ln,
+		}
+	}
+
 	if network == "unix" {
 		os.Chmod(address, 0o755) //nolint:errcheck
 	}
@@ -107,6 +117,8 @@ func (s *Server) Initialize() error {
 	h = &handlerLogger{h, s.Parent}
 	h = &handlerExitOnPanic{h}
 	h = &handlerWriteTimeout{h, s.WriteTimeout}
+	s.tracker = &handlerTracker{h: h}
+	h = s.tracker
 
 	s.inner = &http.Server{
 		Handler:   h,
@@ -132,10 +144,10 @@ func (s *Server) Initialize() error {
 
 // Close closes all resources and waits for all routines to return.
 func (s *Server) Close() {
-	ctx, ctxCancel := context.WithCancel(context.Background())
-	ctxCancel()
-	s.inner.Shutdown(ctx)
-	s.ln.Close() // in case Shutdown() is called before Serve()
+	s.ln.Close()
+	s.inner.Close() //nolint:errcheck
+	s.tracker.close()
+
 	if s.loader != nil {
 		s.loader.Close()
 	}

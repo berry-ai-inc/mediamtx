@@ -16,12 +16,13 @@ import (
 )
 
 type serverAuthManager interface {
-	Authenticate(req *auth.Request) *auth.Error
+	Authenticate(req *auth.Request) (string, *auth.Error)
 }
 
 // Server is the playback server.
 type Server struct {
 	Address        string
+	DumpPackets    bool
 	Encryption     bool
 	ServerKey      string
 	ServerCert     string
@@ -48,15 +49,17 @@ func (s *Server) Initialize() error {
 	router.GET("/get", s.onGet)
 
 	s.httpServer = &httpp.Server{
-		Address:      s.Address,
-		AllowOrigins: s.AllowOrigins,
-		ReadTimeout:  time.Duration(s.ReadTimeout),
-		WriteTimeout: time.Duration(s.WriteTimeout),
-		Encryption:   s.Encryption,
-		ServerCert:   s.ServerCert,
-		ServerKey:    s.ServerKey,
-		Handler:      router,
-		Parent:       s,
+		Address:           s.Address,
+		AllowOrigins:      s.AllowOrigins,
+		DumpPackets:       s.DumpPackets,
+		DumpPacketsPrefix: "playback_server_conn",
+		ReadTimeout:       time.Duration(s.ReadTimeout),
+		WriteTimeout:      time.Duration(s.WriteTimeout),
+		Encryption:        s.Encryption,
+		ServerCert:        s.ServerCert,
+		ServerKey:         s.ServerKey,
+		Handler:           router,
+		Parent:            s,
 	}
 	err := s.httpServer.Initialize()
 	if err != nil {
@@ -121,12 +124,12 @@ func (s *Server) doAuth(ctx *gin.Context, pathName string) bool {
 		IP:          net.ParseIP(ctx.ClientIP()),
 	}
 
-	err := s.AuthManager.Authenticate(req)
+	_, err := s.AuthManager.Authenticate(req)
 	if err != nil {
 		if err.AskCredentials {
 			ctx.Header("WWW-Authenticate", `Basic realm="mediamtx"`)
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, &defs.APIError{
-				Status: "error",
+				Status: defs.APIErrorStatusError,
 				Error:  "authentication error",
 			})
 			return false
@@ -139,7 +142,7 @@ func (s *Server) doAuth(ctx *gin.Context, pathName string) bool {
 		<-time.After(auth.PauseAfterError)
 
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, &defs.APIError{
-			Status: "error",
+			Status: defs.APIErrorStatusError,
 			Error:  "authentication error",
 		})
 		return false

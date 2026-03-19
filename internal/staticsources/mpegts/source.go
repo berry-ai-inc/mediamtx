@@ -10,9 +10,10 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
-	"github.com/bluenviron/mediamtx/internal/counterdumper"
 	"github.com/bluenviron/mediamtx/internal/defs"
+	"github.com/bluenviron/mediamtx/internal/errordumper"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/packetdumper"
 	"github.com/bluenviron/mediamtx/internal/protocols/mpegts"
 	"github.com/bluenviron/mediamtx/internal/protocols/udp"
 	"github.com/bluenviron/mediamtx/internal/protocols/unix"
@@ -27,6 +28,7 @@ type parent interface {
 
 // Source is a MPEG-TS static source.
 type Source struct {
+	DumpPackets       bool
 	ReadTimeout       conf.Duration
 	UDPReadBufferSize uint
 	Parent            parent
@@ -50,10 +52,15 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 
 	switch u.Scheme {
 	case "unix+mpegts":
-		nc, err = unix.CreateConn(u)
+		params := unix.URLToParams(u)
+		l := &unix.Listener{
+			Path: params.Path,
+		}
+		err = l.Initialize()
 		if err != nil {
 			return err
 		}
+		nc = l
 
 	default:
 		udpReadBufferSize := s.UDPReadBufferSize
@@ -61,10 +68,41 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 			udpReadBufferSize = *params.Conf.MPEGTSUDPReadBufferSize
 		}
 
-		nc, err = udp.CreateConn(u, int(udpReadBufferSize))
+		listenPacket := net.ListenPacket
+
+		if s.DumpPackets {
+			listenPacket = func(network, address string) (net.PacketConn, error) {
+				pc, err2 := net.ListenPacket(network, address)
+				if err2 != nil {
+					return nil, err2
+				}
+
+				d := &packetdumper.PacketConn{
+					Prefix:     "mpegts_source_packetconn",
+					PacketConn: pc,
+				}
+				err2 = d.Initialize()
+				if err2 != nil {
+					return nil, err2
+				}
+
+				return d, nil
+			}
+		}
+
+		params := udp.URLToParams(u)
+		l := &udp.Listener{
+			Address:           params.Address,
+			Source:            params.Source,
+			IntfName:          params.IntfName,
+			UDPReadBufferSize: int(udpReadBufferSize),
+			ListenPacket:      listenPacket,
+		}
+		err = l.Initialize()
 		if err != nil {
 			return err
 		}
+		nc = l
 	}
 
 	readerErr := make(chan error)
@@ -96,37 +134,34 @@ func (s *Source) runReader(nc net.Conn) error {
 		return err
 	}
 
-	decodeErrors := &counterdumper.CounterDumper{
-		OnReport: func(val uint64) {
-			s.Log(logger.Warn, "%d decode %s",
-				val,
-				func() string {
-					if val == 1 {
-						return "error"
-					}
-					return "errors"
-				}())
+	decodeErrors := &errordumper.Dumper{
+		OnReport: func(val uint64, last error) {
+			if val == 1 {
+				s.Log(logger.Warn, "decode error: %v", last)
+			} else {
+				s.Log(logger.Warn, "%d decode errors, last was: %v", val, last)
+			}
 		},
 	}
 
 	decodeErrors.Start()
 	defer decodeErrors.Stop()
 
-	mr.OnDecodeError(func(_ error) {
-		decodeErrors.Increase()
+	mr.OnDecodeError(func(err error) {
+		decodeErrors.Add(err)
 	})
 
-	var stream *stream.Stream
+	var subStream *stream.SubStream
 
-	medias, err := mpegts.ToStream(mr, &stream, s)
+	medias, err := mpegts.ToStream(mr, &subStream, s)
 	if err != nil {
 		return err
 	}
 
 	res := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
-		Desc:               &description.Session{Medias: medias},
-		GenerateRTPPackets: true,
-		FillNTP:            true,
+		Desc:          &description.Session{Medias: medias},
+		UseRTPPackets: false,
+		ReplaceNTP:    true,
 	})
 	if res.Err != nil {
 		return res.Err
@@ -134,7 +169,7 @@ func (s *Source) runReader(nc net.Conn) error {
 
 	defer s.Parent.SetNotReady(defs.PathSourceStaticSetNotReadyReq{})
 
-	stream = res.Stream
+	subStream = res.SubStream
 
 	for {
 		nc.SetReadDeadline(time.Now().Add(time.Duration(s.ReadTimeout)))
@@ -146,9 +181,9 @@ func (s *Source) runReader(nc net.Conn) error {
 }
 
 // APISourceDescribe implements StaticSource.
-func (*Source) APISourceDescribe() defs.APIPathSourceOrReader {
-	return defs.APIPathSourceOrReader{
-		Type: "mpegtsSource",
+func (*Source) APISourceDescribe() *defs.APIPathSource {
+	return &defs.APIPathSource{
+		Type: defs.APIPathSourceTypeMPEGTSSource,
 		ID:   "",
 	}
 }
