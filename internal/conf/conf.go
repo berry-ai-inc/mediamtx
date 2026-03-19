@@ -403,8 +403,9 @@ type Conf struct {
 	RecordDeleteAfter     *Duration     `json:"recordDeleteAfter,omitempty" deprecated:"true"`
 
 	// berry's
-	RecordAudio        *bool `json:"recordAudio,omitempty"`        // deprecated
-	RecordTimestampCSV *bool `json:"recordTimestampCSV,omitempty"` // deprecated
+	RecordAudio            *bool `json:"recordAudio,omitempty"`
+	RecordTimestampCSV     *bool `json:"recordTimestampCSV,omitempty"`
+	RecordUseHostTimestamp *bool `json:"recordUseHostTimestamp,omitempty"`
 
 	// Path defaults
 	PathDefaults Path `json:"pathDefaults"`
@@ -1062,6 +1063,9 @@ func (conf *Conf) Validate(l logger.Writer) error {
 	}
 	if conf.RecordTimestampCSV != nil {
 		conf.PathDefaults.RecordTimestampCSV = *conf.RecordTimestampCSV
+	}
+	if conf.RecordUseHostTimestamp != nil {
+		conf.PathDefaults.RecordUseHostTimestamp = *conf.RecordUseHostTimestamp
 	}
 
 	hasAllOthers := false

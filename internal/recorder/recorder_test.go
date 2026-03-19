@@ -210,8 +210,9 @@ func TestRecorder(t *testing.T) {
 					restartPause: 1 * time.Millisecond,
 
 					// berry's
-					RecordAudio:        recAudio,
-					RecordTimestampCSV: true,
+					RecordAudio:            recAudio,
+					RecordTimestampCSV:     true,
+					RecordUseHostTimestamp: true,
 				}
 				w.Initialize()
 

@@ -934,8 +934,9 @@ func (pa *path) startRecording() {
 		Parent: pa,
 
 		// berry's
-		RecordAudio:        pa.conf.RecordAudio,
-		RecordTimestampCSV: pa.conf.RecordTimestampCSV,
+		RecordAudio:            pa.conf.RecordAudio,
+		RecordTimestampCSV:     pa.conf.RecordTimestampCSV,
+		RecordUseHostTimestamp: pa.conf.RecordUseHostTimestamp,
 	}
 	pa.recorder.Initialize()
 }

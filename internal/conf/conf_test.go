@@ -90,8 +90,9 @@ func TestConfFromFile(t *testing.T) {
 			RunOnDemandStartTimeout:      5 * Duration(time.Second),
 			RunOnDemandCloseAfter:        10 * Duration(time.Second),
 			// berry's
-			RecordAudio:        false,
-			RecordTimestampCSV: false,
+			RecordAudio:            false,
+			RecordTimestampCSV:     false,
+			RecordUseHostTimestamp: true,
 		}, pa)
 	}()
 

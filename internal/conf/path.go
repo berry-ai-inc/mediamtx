@@ -199,8 +199,9 @@ type Path struct {
 	RecordDeleteAfter     Duration     `json:"recordDeleteAfter"`
 
 	// berry's
-	RecordAudio        bool `json:"recordAudio"`
-	RecordTimestampCSV bool `json:"recordTimestampCSV"`
+	RecordAudio            bool `json:"recordAudio"`
+	RecordTimestampCSV     bool `json:"recordTimestampCSV"`
+	RecordUseHostTimestamp bool `json:"recordUseHostTimestamp"`
 
 	// Authentication (deprecated)
 	PublishUser *Credential `json:"publishUser,omitempty" deprecated:"true"`
@@ -326,6 +327,7 @@ func (pconf *Path) setDefaults() {
 	// berry's
 	pconf.RecordAudio = false
 	pconf.RecordTimestampCSV = false
+	pconf.RecordUseHostTimestamp = true
 
 	// Publisher source
 	pconf.OverridePublisher = true

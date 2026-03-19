@@ -683,6 +683,8 @@ components:
           type: boolean
         recordTimestampCSV:
           type: boolean
+        recordUseHostTimestamp:
+          type: boolean
 
         # Authentication (deprecated)
         publishUser:

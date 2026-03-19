@@ -253,7 +253,13 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *formatFMP4Samp
 			}
 		}
 		if s.csvFi != nil {
-			s.csvFi.WriteString(sample.ntp.UTC().Format("2006-01-02T15:04:05.000000Z,\n"))
+			var ts time.Time
+			if s.f.ri.recordUseHostTimestamp {
+				ts = time.Now().UTC()
+			} else {
+				ts = sample.ntp.UTC()
+			}
+			s.csvFi.WriteString(ts.Format("2006-01-02T15:04:05.000000Z,\n"))
 		}
 	}
 	if !track.initTrack.Codec.IsVideo() && !s.f.ri.recordAudio {

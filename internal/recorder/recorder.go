@@ -33,8 +33,9 @@ type Recorder struct {
 	Parent            logger.Writer
 
 	// berry's
-	RecordAudio        bool
-	RecordTimestampCSV bool
+	RecordAudio            bool
+	RecordTimestampCSV     bool
+	RecordUseHostTimestamp bool
 
 	restartPause time.Duration
 
@@ -73,8 +74,9 @@ func (r *Recorder) Initialize() {
 		onSegmentComplete: r.OnSegmentComplete,
 		parent:            r,
 		// berry's
-		recordTimestampCSV: r.RecordTimestampCSV,
-		recordAudio:        r.RecordAudio,
+		recordTimestampCSV:     r.RecordTimestampCSV,
+		recordAudio:            r.RecordAudio,
+		recordUseHostTimestamp: r.RecordUseHostTimestamp,
 	}
 	r.currentInstance.initialize()
 
@@ -123,8 +125,9 @@ func (r *Recorder) run() {
 			onSegmentComplete: r.OnSegmentComplete,
 			parent:            r,
 			// berry's
-			recordTimestampCSV: r.RecordTimestampCSV,
-			recordAudio:        r.RecordAudio,
+			recordTimestampCSV:     r.RecordTimestampCSV,
+			recordAudio:            r.RecordAudio,
+			recordUseHostTimestamp: r.RecordUseHostTimestamp,
 		}
 		r.currentInstance.initialize()
 	}

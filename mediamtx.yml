@@ -541,9 +541,11 @@ pathDefaults:
   # Set to 0s to disable automatic deletion.
   recordDeleteAfter: 1d
   # Record audio track or not, only applicable for fmp4, mpegts always record audio
-  recordAudio: no
+  recordAudio: false
   # Record frame timestamps in a csv file, only applicable for fmp4
-  recordTimestampCSV: no
+  recordTimestampCSV: false
+  # Use host's unix epoch timestamp instead of NTP timestamp when writing to csv, only applicable when recordTimestampCSV is enabled
+  recordUseHostTimestamp: true
 
   ###############################################
   # Default path settings -> Publisher source (when source is "publisher")

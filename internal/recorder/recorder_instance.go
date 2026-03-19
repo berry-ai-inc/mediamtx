@@ -31,8 +31,9 @@ type recorderInstance struct {
 	reader      *stream.Reader
 
 	// berry's
-	recordAudio        bool
-	recordTimestampCSV bool
+	recordAudio            bool
+	recordTimestampCSV     bool
+	recordUseHostTimestamp bool
 
 	terminate chan struct{}
 	done      chan struct{}
