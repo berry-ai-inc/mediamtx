@@ -16,6 +16,9 @@ type Unit struct {
 	// absolute time
 	NTP time.Time
 
+	// berry's, host-local timestamp captured at ingestion
+	HostNTP time.Time
+
 	// RTP packets
 	RTPPackets []*rtp.Packet
 

@@ -131,7 +131,7 @@ type formatFMP4Segment struct {
 	endDTS         time.Duration
 	nextPartNumber uint32
 
-	// berry's
+	// berry's, CSV file for per-frame timestamps
 	csvFi *os.File
 }
 
@@ -166,7 +166,7 @@ func (s *formatFMP4Segment) close() error {
 		}
 	}
 
-	// berry's
+	// berry's, close CSV file alongside segment
 	if s.csvFi != nil {
 		s.csvFi.Close()
 	}
@@ -242,7 +242,7 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *formatFMP4Samp
 		s.nextPartNumber++
 	}
 
-	// berry's
+	// berry's, write per-frame timestamp to CSV for video tracks
 	if track.initTrack.Codec.IsVideo() {
 		if s.f.ri.recordTimestampCSV && s.csvFi == nil {
 			path := recordstore.Path{Start: s.startNTP}.Encode(s.f.ri.pathFormat2)
@@ -255,7 +255,7 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *formatFMP4Samp
 		if s.csvFi != nil {
 			var ts time.Time
 			if s.f.ri.recordUseHostTimestamp {
-				ts = time.Now().UTC()
+				ts = sample.hostNTP.UTC()
 			} else {
 				ts = sample.ntp.UTC()
 			}

@@ -89,7 +89,7 @@ func TestConfFromFile(t *testing.T) {
 			RPICameraMJPEGQuality:        60,
 			RunOnDemandStartTimeout:      5 * Duration(time.Second),
 			RunOnDemandCloseAfter:        10 * Duration(time.Second),
-			// berry's
+			// berry's, recording option defaults
 			RecordAudio:            false,
 			RecordTimestampCSV:     false,
 			RecordUseHostTimestamp: true,

@@ -147,6 +147,8 @@ type formatFMP4Sample struct {
 	*fmp4.Sample
 	dts int64
 	ntp time.Time
+	// berry's, host-local timestamp for CSV recording
+	hostNTP time.Time
 }
 
 type formatFMP4 struct {
@@ -229,9 +231,10 @@ func (f *formatFMP4) initialize() bool {
 						}
 
 						return track.write(&formatFMP4Sample{
-							Sample: &sampl,
-							dts:    u.PTS,
-							ntp:    u.NTP,
+							Sample:  &sampl,
+							dts:     u.PTS,
+							ntp:     u.NTP,
+							hostNTP: u.HostNTP,
 						})
 					})
 
@@ -310,8 +313,9 @@ func (f *formatFMP4) initialize() bool {
 								IsNonSyncSample: !randomAccess,
 								Payload:         u.Payload.(unit.PayloadVP9),
 							},
-							dts: u.PTS,
-							ntp: u.NTP,
+							dts:     u.PTS,
+							ntp:     u.NTP,
+							hostNTP: u.HostNTP,
 						})
 					})
 
@@ -397,9 +401,10 @@ func (f *formatFMP4) initialize() bool {
 						}
 
 						return track.write(&formatFMP4Sample{
-							Sample: &sampl,
-							dts:    dts,
-							ntp:    u.NTP,
+							Sample:  &sampl,
+							dts:     dts,
+							ntp:     u.NTP,
+							hostNTP: u.HostNTP,
 						})
 					})
 
@@ -473,9 +478,10 @@ func (f *formatFMP4) initialize() bool {
 						}
 
 						return track.write(&formatFMP4Sample{
-							Sample: &sampl,
-							dts:    dts,
-							ntp:    u.NTP,
+							Sample:  &sampl,
+							dts:     dts,
+							ntp:     u.NTP,
+							hostNTP: u.HostNTP,
 						})
 					})
 
@@ -534,8 +540,9 @@ func (f *formatFMP4) initialize() bool {
 								Payload:         u.Payload.(unit.PayloadMPEG4Video),
 								IsNonSyncSample: !randomAccess,
 							},
-							dts: u.PTS,
-							ntp: u.NTP,
+							dts:     u.PTS,
+							ntp:     u.NTP,
+							hostNTP: u.HostNTP,
 						})
 					})
 
@@ -585,8 +592,9 @@ func (f *formatFMP4) initialize() bool {
 								Payload:         u.Payload.(unit.PayloadMPEG1Video),
 								IsNonSyncSample: !randomAccess,
 							},
-							dts: u.PTS,
-							ntp: u.NTP,
+							dts:     u.PTS,
+							ntp:     u.NTP,
+							hostNTP: u.HostNTP,
 						})
 					})
 
@@ -622,8 +630,9 @@ func (f *formatFMP4) initialize() bool {
 							Sample: &fmp4.Sample{
 								Payload: u.Payload.(unit.PayloadMJPEG),
 							},
-							dts: u.PTS,
-							ntp: u.NTP,
+							dts:     u.PTS,
+							ntp:     u.NTP,
+							hostNTP: u.HostNTP,
 						})
 					})
 
@@ -648,8 +657,9 @@ func (f *formatFMP4) initialize() bool {
 								Sample: &fmp4.Sample{
 									Payload: packet,
 								},
-								dts: pts,
-								ntp: u.NTP.Add(timestampToDuration(pts-u.PTS, clockRate)),
+								dts:     pts,
+								ntp:     u.NTP.Add(timestampToDuration(pts-u.PTS, clockRate)),
+								hostNTP: u.HostNTP,
 							})
 							if err != nil {
 								return err
@@ -682,8 +692,9 @@ func (f *formatFMP4) initialize() bool {
 								Sample: &fmp4.Sample{
 									Payload: au,
 								},
-								dts: pts,
-								ntp: u.NTP.Add(timestampToDuration(pts-u.PTS, clockRate)),
+								dts:     pts,
+								ntp:     u.NTP.Add(timestampToDuration(pts-u.PTS, clockRate)),
+								hostNTP: u.HostNTP,
 							})
 							if err != nil {
 								return err
@@ -719,8 +730,9 @@ func (f *formatFMP4) initialize() bool {
 								Sample: &fmp4.Sample{
 									Payload: ame.Payloads[0][0][0],
 								},
-								dts: u.PTS,
-								ntp: u.NTP,
+								dts:     u.PTS,
+								ntp:     u.NTP,
+								hostNTP: u.HostNTP,
 							})
 						})
 				}
@@ -762,8 +774,9 @@ func (f *formatFMP4) initialize() bool {
 								Sample: &fmp4.Sample{
 									Payload: frame,
 								},
-								dts: u.PTS + u.PTS,
-								ntp: u.NTP,
+								dts:     u.PTS + u.PTS,
+								ntp:     u.NTP,
+								hostNTP: u.HostNTP,
 							})
 							if err != nil {
 								return err
@@ -830,8 +843,9 @@ func (f *formatFMP4) initialize() bool {
 								Sample: &fmp4.Sample{
 									Payload: frame,
 								},
-								dts: pts,
-								ntp: u.NTP.Add(timestampToDuration(pts-u.PTS, clockRate)),
+								dts:     pts,
+								ntp:     u.NTP.Add(timestampToDuration(pts-u.PTS, clockRate)),
+								hostNTP: u.HostNTP,
 							})
 							if err != nil {
 								return err
@@ -876,8 +890,9 @@ func (f *formatFMP4) initialize() bool {
 							Sample: &fmp4.Sample{
 								Payload: lpcm,
 							},
-							dts: u.PTS,
-							ntp: u.NTP,
+							dts:     u.PTS,
+							ntp:     u.NTP,
+							hostNTP: u.HostNTP,
 						})
 					})
 
@@ -902,8 +917,9 @@ func (f *formatFMP4) initialize() bool {
 							Sample: &fmp4.Sample{
 								Payload: u.Payload.(unit.PayloadLPCM),
 							},
-							dts: u.PTS,
-							ntp: u.NTP,
+							dts:     u.PTS,
+							ntp:     u.NTP,
+							hostNTP: u.HostNTP,
 						})
 					})
 			}

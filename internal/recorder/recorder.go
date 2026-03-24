@@ -32,7 +32,7 @@ type Recorder struct {
 	OnSegmentComplete OnSegmentCompleteFunc
 	Parent            logger.Writer
 
-	// berry's
+	// berry's, custom recording options
 	RecordAudio            bool
 	RecordTimestampCSV     bool
 	RecordUseHostTimestamp bool
@@ -73,7 +73,7 @@ func (r *Recorder) Initialize() {
 		onSegmentCreate:   r.OnSegmentCreate,
 		onSegmentComplete: r.OnSegmentComplete,
 		parent:            r,
-		// berry's
+		// berry's, propagate custom recording options
 		recordTimestampCSV:     r.RecordTimestampCSV,
 		recordAudio:            r.RecordAudio,
 		recordUseHostTimestamp: r.RecordUseHostTimestamp,
@@ -124,7 +124,7 @@ func (r *Recorder) run() {
 			onSegmentCreate:   r.OnSegmentCreate,
 			onSegmentComplete: r.OnSegmentComplete,
 			parent:            r,
-			// berry's
+			// berry's, propagate custom recording options
 			recordTimestampCSV:     r.RecordTimestampCSV,
 			recordAudio:            r.RecordAudio,
 			recordUseHostTimestamp: r.RecordUseHostTimestamp,

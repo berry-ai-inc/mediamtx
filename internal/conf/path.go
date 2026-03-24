@@ -198,7 +198,7 @@ type Path struct {
 	RecordSegmentDuration Duration     `json:"recordSegmentDuration"`
 	RecordDeleteAfter     Duration     `json:"recordDeleteAfter"`
 
-	// berry's
+	// berry's, custom recording options
 	RecordAudio            bool `json:"recordAudio"`
 	RecordTimestampCSV     bool `json:"recordTimestampCSV"`
 	RecordUseHostTimestamp bool `json:"recordUseHostTimestamp"`
@@ -324,7 +324,7 @@ func (pconf *Path) setDefaults() {
 	pconf.RecordSegmentDuration = 3600 * Duration(time.Second)
 	pconf.RecordDeleteAfter = 24 * 3600 * Duration(time.Second)
 
-	// berry's
+	// berry's, recording option defaults
 	pconf.RecordAudio = false
 	pconf.RecordTimestampCSV = false
 	pconf.RecordUseHostTimestamp = true

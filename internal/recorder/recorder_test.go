@@ -209,7 +209,7 @@ func TestRecorder(t *testing.T) {
 					Parent:       test.NilLogger,
 					restartPause: 1 * time.Millisecond,
 
-					// berry's
+					// berry's, enable custom recording options
 					RecordAudio:            recAudio,
 					RecordTimestampCSV:     true,
 					RecordUseHostTimestamp: true,
@@ -367,7 +367,7 @@ func TestRecorder(t *testing.T) {
 						}
 					}
 
-					// berry's
+					// berry's, verify audio tracks included when recAudio enabled
 					if recAudio {
 						require.Equal(t, fmp4.Parts{
 							{

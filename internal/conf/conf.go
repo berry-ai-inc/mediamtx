@@ -402,7 +402,7 @@ type Conf struct {
 	RecordSegmentDuration *Duration     `json:"recordSegmentDuration,omitempty" deprecated:"true"`
 	RecordDeleteAfter     *Duration     `json:"recordDeleteAfter,omitempty" deprecated:"true"`
 
-	// berry's
+	// berry's, custom recording options
 	RecordAudio            *bool `json:"recordAudio,omitempty"`
 	RecordTimestampCSV     *bool `json:"recordTimestampCSV,omitempty"`
 	RecordUseHostTimestamp *bool `json:"recordUseHostTimestamp,omitempty"`
@@ -1057,7 +1057,7 @@ func (conf *Conf) Validate(l logger.Writer) error {
 		conf.PathDefaults.RecordDeleteAfter = *conf.RecordDeleteAfter
 	}
 
-	// berry's
+	// berry's, apply global recording overrides to path defaults
 	if conf.RecordAudio != nil {
 		conf.PathDefaults.RecordAudio = *conf.RecordAudio
 	}

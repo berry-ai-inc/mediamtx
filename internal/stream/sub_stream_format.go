@@ -112,6 +112,9 @@ func (ssf *subStreamFormat) writeUnitInner(u *unit.Unit) error {
 		u.NTP = ssf.streamFormat.ntpEstimator.Estimate(u.PTS)
 	}
 
+	// berry's
+	u.HostNTP = time.Now()
+
 	if len(u.RTPPackets) != 0 {
 		if ssf.rtpDecoder != nil {
 			var err error

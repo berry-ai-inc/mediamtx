@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// berry's, upstream uses 5 seconds
+// berry's, reduced from upstream's 5 seconds for tighter drift detection
 var ( // var so we can restore it to 5 seconds in test
 	maxTimeDifference = 1 * time.Second
 )

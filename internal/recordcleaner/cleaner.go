@@ -128,7 +128,7 @@ func (c *Cleaner) deleteExpiredSegments(now time.Time, pathName string, pathConf
 	for _, seg := range segments {
 		c.Log(logger.Debug, "removing %s", seg.Fpath)
 		os.Remove(seg.Fpath)
-		// berry's
+		// berry's, also remove companion CSV file
 		os.Remove(strings.Replace(seg.Fpath, ".mp4", ".csv", 1))
 	}
 

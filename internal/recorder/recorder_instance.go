@@ -30,7 +30,7 @@ type recorderInstance struct {
 	skip        bool
 	reader      *stream.Reader
 
-	// berry's
+	// berry's, custom recording options
 	recordAudio            bool
 	recordTimestampCSV     bool
 	recordUseHostTimestamp bool
