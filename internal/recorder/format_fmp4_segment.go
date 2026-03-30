@@ -262,9 +262,6 @@ func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *formatFMP4Samp
 			s.csvFi.WriteString(ts.Format("2006-01-02T15:04:05.000000Z,\n"))
 		}
 	}
-	if !track.initTrack.Codec.IsVideo() && !s.f.ri.recordAudio {
-		return nil
-	}
 
 	return s.curPart.write(track, sample, dts)
 }

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	rtspformat "github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/ac3"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/av1"
@@ -179,6 +180,11 @@ func (f *formatFMP4) initialize() bool {
 	}
 
 	for _, media := range f.ri.stream.Desc.Medias {
+		// berry's
+		if media.Type == description.MediaTypeAudio && !f.ri.recordAudio {
+			continue
+		}
+
 		for _, forma := range media.Formats {
 			clockRate := forma.ClockRate()
 
