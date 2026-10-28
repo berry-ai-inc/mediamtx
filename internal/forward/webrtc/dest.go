@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
 	ptls "github.com/bluenviron/mediamtx/internal/protocols/tls"
 	pwebrtc "github.com/bluenviron/mediamtx/internal/protocols/webrtc"
 	"github.com/bluenviron/mediamtx/internal/protocols/whip"
@@ -29,6 +31,7 @@ type Dest struct {
 
 	mutex  sync.RWMutex
 	client *whip.Client
+	reader *stream.Reader
 }
 
 // Log implements logger.Writer.
@@ -36,17 +39,42 @@ func (d *Dest) Log(level logger.Level, format string, args ...any) {
 	d.Parent.Log(level, format, args...)
 }
 
-// OutboundBytes returns the number of bytes sent by the destination.
-func (d *Dest) OutboundBytes() uint64 {
+// Info returns runtime information.
+func (d *Dest) Info() defs.ForwardDestInfo {
 	d.mutex.RLock()
 	client := d.client
+	reader := d.reader
 	d.mutex.RUnlock()
 
 	if client == nil || client.PeerConnection() == nil {
-		return 0
+		return defs.ForwardDestInfo{}
 	}
 
-	return client.PeerConnection().Stats().BytesSent
+	pc := client.PeerConnection()
+	stats := pc.Stats()
+	outboundFramesDiscarded := uint64(0)
+	if reader != nil {
+		outboundFramesDiscarded = reader.OutboundFramesDiscarded()
+	}
+
+	return defs.ForwardDestInfo{
+		OutboundBytes: stats.BytesSent,
+		TypeSpecific: &defs.APIForwardDestTypeSpecificWebRTC{
+			RemoteAddr:                client.URL.Host,
+			PeerConnectionEstablished: true,
+			LocalCandidate:            pc.LocalCandidate(),
+			RemoteCandidate:           pc.RemoteCandidate(),
+			InboundBytes:              stats.BytesReceived,
+			InboundRTPPackets:         stats.RTPPacketsReceived,
+			InboundRTPPacketsLost:     stats.RTPPacketsLost,
+			InboundRTPPacketsJitter:   stats.RTPPacketsJitter,
+			InboundRTCPPackets:        stats.RTCPPacketsReceived,
+			OutboundBytes:             stats.BytesSent,
+			OutboundRTPPackets:        stats.RTPPacketsSent,
+			OutboundRTCPPackets:       stats.RTCPPacketsSent,
+			OutboundFramesDiscarded:   outboundFramesDiscarded,
+		},
+	}
 }
 
 // Run runs the destination.
@@ -78,7 +106,7 @@ func (d *Dest) Run(ctx context.Context) error {
 		OutboundDataChannels: pc.OutboundDataChannels,
 		HTTPClient: &http.Client{
 			Timeout:   time.Duration(d.ReadTimeout),
-			Transport: tr,
+			Transport: &httpp.LoggerTransport{Transport: tr, Log: d},
 		},
 		BearerToken: d.BearerToken,
 		Log:         d,
@@ -90,10 +118,12 @@ func (d *Dest) Run(ctx context.Context) error {
 
 	d.mutex.Lock()
 	d.client = client
+	d.reader = r
 	d.mutex.Unlock()
 	defer func() {
 		d.mutex.Lock()
 		d.client = nil
+		d.reader = nil
 		d.mutex.Unlock()
 	}()
 

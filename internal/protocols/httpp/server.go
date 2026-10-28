@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/net/http2"
-
 	"github.com/bluenviron/mediamtx/internal/certloader"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/packetdumper"
@@ -51,11 +49,15 @@ type Server struct {
 	GetCertificate    func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 	Handler           http.Handler
 	Parent            logger.Writer
+	OnListenError     func(context.Context, error)
 
-	ln      net.Listener
-	inner   *http.Server
-	loader  *certloader.CertLoader
-	tracker *handlerTracker
+	ctx       context.Context
+	ctxCancel context.CancelFunc
+	done      chan struct{}
+	ln        net.Listener
+	inner     *http.Server
+	loader    *certloader.CertLoader
+	tracker   *handlerTracker
 }
 
 // Initialize initializes a Server.
@@ -95,6 +97,7 @@ func (s *Server) Initialize() error {
 
 		tlsConfig = &tls.Config{
 			GetCertificate: getCertificate,
+			NextProtos:     []string{"h2", "http/1.1"},
 		}
 	}
 
@@ -136,13 +139,10 @@ func (s *Server) Initialize() error {
 	}
 
 	if tlsConfig != nil {
-		err := http2.ConfigureServer(s.inner, &http2.Server{})
-		if err != nil {
-			if s.loader != nil {
-				s.loader.Close()
-			}
-			return err
-		}
+		protocols := new(http.Protocols)
+		protocols.SetHTTP1(true)
+		protocols.SetHTTP2(true)
+		s.inner.Protocols = protocols
 	}
 
 	listen := func(network string, address string) (net.Listener, error) {
@@ -203,14 +203,27 @@ func (s *Server) Initialize() error {
 		os.Chmod(address, 0o755) //nolint:errcheck
 	}
 
-	go s.inner.Serve(s.ln)
+	s.ctx, s.ctxCancel = context.WithCancel(context.Background())
+	s.done = make(chan struct{})
+	go s.run()
 
 	return nil
 }
 
+func (s *Server) run() {
+	defer close(s.done)
+
+	err := s.inner.Serve(s.ln)
+	if s.ctx.Err() == nil && s.OnListenError != nil {
+		s.OnListenError(s.ctx, err)
+	}
+}
+
 // Close closes all resources and waits for all routines to return.
 func (s *Server) Close() {
+	s.ctxCancel()
 	s.ln.Close()
+	<-s.done
 
 	ctx, ctxCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	s.inner.Shutdown(ctx) //nolint:errcheck

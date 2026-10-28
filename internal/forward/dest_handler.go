@@ -47,73 +47,29 @@ func resolveDest(dest string, pathName string, matches []string) string {
 	return out
 }
 
-// DestHandler manages a forward destination.
-type DestHandler struct {
-	Pos               int
-	Conf              conf.ForwardDest
-	ReadTimeout       conf.Duration
-	WriteTimeout      conf.Duration
-	UDPMaxPayloadSize int
-	PathName          string
-	Matches           []string
-	Parent            logger.Writer
+func destType(dest string) defs.APIForwardDestType {
+	switch {
+	case strings.HasPrefix(dest, "rtmp://"), strings.HasPrefix(dest, "rtmps://"):
+		return defs.APIForwardDestTypeRTMP
 
-	ctx       context.Context
-	ctxCancel func()
+	case strings.HasPrefix(dest, "rtsp://"), strings.HasPrefix(dest, "rtsps://"):
+		return defs.APIForwardDestTypeRTSP
 
-	uuid          uuid.UUID
-	created       time.Time
-	protocol      defs.APIForwardDestProtocol
-	mutex         sync.RWMutex
-	state         defs.APIForwardDestState
-	lastError     string
-	outboundBytes uint64
-	activeDest    Dest
+	case strings.HasPrefix(dest, "srt://"):
+		return defs.APIForwardDestTypeSRT
 
-	done chan struct{}
-}
+	case strings.HasPrefix(dest, "moqt://"):
+		return defs.APIForwardDestTypeMoQ
 
-func (h *DestHandler) initialize() {
-	h.uuid = uuid.New()
-	h.created = time.Now()
-	h.protocol = destProtocol(h.Conf.Dest)
-	h.state = defs.APIForwardDestStateIdle
-}
+	case strings.HasPrefix(dest, "whip://"), strings.HasPrefix(dest, "whips://"):
+		return defs.APIForwardDestTypeWebRTC
 
-func (h *DestHandler) start(strm *stream.Stream) {
-	h.Log(logger.Debug, "starting")
-	h.ctx, h.ctxCancel = context.WithCancel(context.Background())
-	h.done = make(chan struct{})
-	go h.run(strm)
-}
-
-func (h *DestHandler) stop() {
-	h.Log(logger.Debug, "stopping")
-	h.ctxCancel()
-	<-h.done
-}
-
-// ID returns the ID.
-func (h *DestHandler) ID() uuid.UUID {
-	return h.uuid
-}
-
-// Log implements logger.Writer.
-func (h *DestHandler) Log(level logger.Level, format string, args ...any) {
-	id := hex.EncodeToString(h.uuid[:4])
-	h.Parent.Log(level, "[%s dest %d %s] "+format,
-		append([]any{strings.ToUpper(string(h.protocol)), h.Pos, id}, args...)...)
-}
-
-func (h *DestHandler) outboundBytesLocked() uint64 {
-	outboundBytes := h.outboundBytes
-	if h.activeDest != nil {
-		outboundBytes += h.activeDest.OutboundBytes()
+	default:
+		panic("should not happen")
 	}
-	return outboundBytes
 }
 
-func destProtocol(dest string) defs.APIForwardDestProtocol {
+func destProtocol(dest string) defs.APIForwardDestProtocol { //nolint:staticcheck
 	switch {
 	case strings.HasPrefix(dest, "rtmp://"):
 		return defs.APIForwardDestProtocolRTMP
@@ -142,6 +98,77 @@ func destProtocol(dest string) defs.APIForwardDestProtocol {
 	default:
 		panic("should not happen")
 	}
+}
+
+// DestHandler manages a forward destination.
+type DestHandler struct {
+	Pos               int
+	Conf              conf.ForwardDest
+	ReadTimeout       conf.Duration
+	WriteTimeout      conf.Duration
+	UDPMaxPayloadSize int
+	PathName          string
+	Matches           []string
+	Parent            logger.Writer
+
+	ctx       context.Context
+	ctxCancel func()
+
+	uuid       uuid.UUID
+	created    time.Time
+	typ        defs.APIForwardDestType
+	protocol   defs.APIForwardDestProtocol //nolint:staticcheck
+	mutex      sync.RWMutex
+	state      defs.APIForwardDestState
+	lastError  string
+	activeDest Dest
+
+	done chan struct{}
+}
+
+func (h *DestHandler) initialize() {
+	h.uuid = uuid.New()
+	h.created = time.Now()
+	h.typ = destType(h.Conf.Dest)
+	h.protocol = destProtocol(h.Conf.Dest)
+	h.state = defs.APIForwardDestStateIdle
+}
+
+func (h *DestHandler) start(strm *stream.Stream) {
+	h.Log(logger.Debug, "starting")
+	h.ctx, h.ctxCancel = context.WithCancel(context.Background())
+	h.done = make(chan struct{})
+	go h.run(strm)
+}
+
+func (h *DestHandler) stop() {
+	h.Log(logger.Debug, "stopping")
+	h.ctxCancel()
+	<-h.done
+}
+
+// ID returns the ID.
+func (h *DestHandler) ID() uuid.UUID {
+	return h.uuid
+}
+
+func (h *DestHandler) setPos(pos int) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	h.Pos = pos
+}
+
+func (h *DestHandler) getPos() int {
+	h.mutex.RLock()
+	defer h.mutex.RUnlock()
+	return h.Pos
+}
+
+// Log implements logger.Writer.
+func (h *DestHandler) Log(level logger.Level, format string, args ...any) {
+	id := hex.EncodeToString(h.uuid[:4])
+	h.Parent.Log(level, "[%s dest %d %s] "+format,
+		append([]any{strings.ToUpper(string(h.protocol)), h.getPos(), id}, args...)...)
 }
 
 func (h *DestHandler) run(strm *stream.Stream) {
@@ -186,8 +213,8 @@ func (h *DestHandler) runOnce(strm *stream.Stream) error {
 
 	var dest Dest
 
-	switch h.protocol {
-	case defs.APIForwardDestProtocolRTMP, defs.APIForwardDestProtocolRTMPS:
+	switch h.typ {
+	case defs.APIForwardDestTypeRTMP:
 		dest = &forwardrtmp.Dest{
 			Stream:          strm,
 			Dest:            resolvedDest,
@@ -196,7 +223,7 @@ func (h *DestHandler) runOnce(strm *stream.Stream) error {
 			Parent:          h,
 		}
 
-	case defs.APIForwardDestProtocolRTSP, defs.APIForwardDestProtocolRTSPS:
+	case defs.APIForwardDestTypeRTSP:
 		dest = &forwardrtsp.Dest{
 			Stream:          strm,
 			Dest:            resolvedDest,
@@ -206,7 +233,7 @@ func (h *DestHandler) runOnce(strm *stream.Stream) error {
 			Parent:          h,
 		}
 
-	case defs.APIForwardDestProtocolSRT:
+	case defs.APIForwardDestTypeSRT:
 		dest = &forwardsrt.Dest{
 			Stream:            strm,
 			Dest:              resolvedDest,
@@ -215,7 +242,7 @@ func (h *DestHandler) runOnce(strm *stream.Stream) error {
 			Parent:            h,
 		}
 
-	case defs.APIForwardDestProtocolMoQ:
+	case defs.APIForwardDestTypeMoQ:
 		dest = &forwardmoq.Dest{
 			Stream:          strm,
 			Dest:            resolvedDest,
@@ -224,7 +251,7 @@ func (h *DestHandler) runOnce(strm *stream.Stream) error {
 			Parent:          h,
 		}
 
-	case defs.APIForwardDestProtocolWHIP, defs.APIForwardDestProtocolWHIPS:
+	case defs.APIForwardDestTypeWebRTC:
 		dest = &forwardwebrtc.Dest{
 			Stream:          strm,
 			Dest:            resolvedDest,
@@ -246,7 +273,6 @@ func (h *DestHandler) runOnce(strm *stream.Stream) error {
 
 	defer func() {
 		h.mutex.Lock()
-		h.outboundBytes += h.activeDest.OutboundBytes()
 		h.activeDest = nil
 		h.mutex.Unlock()
 	}()
@@ -265,7 +291,7 @@ func (h *DestHandler) runOnce(strm *stream.Stream) error {
 
 	case <-h.ctx.Done():
 		destCtxCancel()
-		<-errChan
+		<-errChan //nolint:errcheck
 		return errTerminated
 	}
 }
@@ -275,16 +301,21 @@ func (h *DestHandler) APIItem() defs.APIForwardDest {
 	h.mutex.RLock()
 	defer h.mutex.RUnlock()
 
-	outboundBytes := h.outboundBytesLocked()
+	info := defs.ForwardDestInfo{}
+	if h.activeDest != nil {
+		info = h.activeDest.Info()
+	}
 
 	return defs.APIForwardDest{
 		ID:            h.uuid,
 		Pos:           h.Pos,
 		Created:       h.created,
 		Conf:          h.Conf,
-		Protocol:      h.protocol,
+		Type:          h.typ,
 		State:         h.state,
 		LastError:     h.lastError,
-		OutboundBytes: outboundBytes,
+		OutboundBytes: info.OutboundBytes,
+		TypeSpecific:  info.TypeSpecific,
+		Protocol:      h.protocol,
 	}
 }

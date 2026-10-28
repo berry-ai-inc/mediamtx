@@ -3,6 +3,7 @@ package conf
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"os"
 	"testing"
@@ -16,6 +17,8 @@ import (
 )
 
 func createTempFile(t *testing.T, byts []byte) string {
+	t.Helper()
+
 	tmpf, err := os.CreateTemp(t.TempDir(), "rtsp-")
 	require.NoError(t, err)
 	defer tmpf.Close()
@@ -49,7 +52,8 @@ func TestConfFromFile(t *testing.T) {
 			OverridePublisher:          true,
 			Forward:                    Forward{},
 			AlwaysAvailableTracks:      []AlwaysAvailableTrack{},
-			RecordPath:                 "./recordings/%path/%Y-%m-%d_%H-%M-%S-%f",
+			AlwaysAvailableRecorded:    true,
+			RecordPath:                 "./recordings/%path/%Y-%m-%d_%H-%M-%S-%f_%z",
 			RecordFormat:               RecordFormatFMP4,
 			RecordPartDuration:         Duration(1 * time.Second),
 			RecordMaxPartSize:          50 * 1024 * 1024,
@@ -152,6 +156,30 @@ func TestConfFromFile(t *testing.T) {
 		{
 			name:   "udp rtp with placeholders",
 			source: "udp+rtp://$G1:$G2",
+		},
+		{
+			name:   "rtsp with username and password",
+			source: "rtsp://user:pass@localhost/stream",
+		},
+		{
+			name:   "rtsp with username and empty password",
+			source: "rtsp://user:@localhost/stream",
+		},
+		{
+			name:   "rtsps with username and empty password",
+			source: "rtsps://user:@localhost/stream",
+		},
+		{
+			name:   "rtsp with empty username and empty password",
+			source: "rtsp://@localhost/stream",
+		},
+		{
+			name:   "rtmp with username and empty password",
+			source: "rtmp://user:@localhost/stream",
+		},
+		{
+			name:   "http with username and empty password",
+			source: "http://user:@localhost/stream.m3u8",
 		},
 	} {
 		t.Run(ca.name, func(t *testing.T) {
@@ -302,14 +330,6 @@ func TestConfDeprecatedAuth(t *testing.T) {
 	require.Equal(t, []AuthInternalUser{
 		{
 			User: "any",
-			Permissions: []AuthInternalUserPermission{
-				{
-					Action: AuthActionPlayback,
-				},
-			},
-		},
-		{
-			User: "any",
 			IPs:  IPNetworks{mustParseCIDR("127.0.0.1/32"), mustParseCIDR("::1/128")},
 			Permissions: []AuthInternalUserPermission{
 				{
@@ -342,9 +362,57 @@ func TestConfDeprecatedAuth(t *testing.T) {
 					Action: AuthActionRead,
 					Path:   "cam",
 				},
+				{
+					Action: AuthActionPlayback,
+					Path:   "cam",
+				},
 			},
 		},
-	}, conf.AuthInternalUsers)
+	}, conf.AuthInternalUsersComputed)
+	require.Equal(t, defaultAuthInternalUsers, conf.AuthInternalUsers)
+}
+
+func TestConfDeprecatedAuthWithEnvUser(t *testing.T) {
+	t.Setenv("MTX_AUTHINTERNALUSERS_0_USER", "myuser")
+
+	tmpf := createTempFile(t, []byte(
+		"paths:\n"+
+			"  cam:\n"+
+			"    readUser: myuser\n"+
+			"    readPass: mypass\n"))
+
+	_, _, err := Load(tmpf, nil, nil)
+	require.EqualError(t, err, "authInternalUsers and legacy credentials "+
+		"(publishUser, publishPass, publishIPs, readUser, readPass, readIPs) cannot be used together")
+}
+
+func TestConfDeprecatedAuthWithExplicitDefaults(t *testing.T) {
+	legacy := "paths:\n" +
+		"  cam:\n" +
+		"    readUser: myuser\n" +
+		"    readPass: mypass\n"
+
+	ref, _, err := Load(createTempFile(t, []byte(legacy)), nil, nil)
+	require.NoError(t, err)
+
+	conf, _, err := Load(createTempFile(t, []byte(
+		"authInternalUsers:\n"+
+			"  - user: any\n"+
+			"    ips: []\n"+
+			"    permissions:\n"+
+			"      - action: publish\n"+
+			"      - action: read\n"+
+			"      - action: playback\n"+
+			"  - user: any\n"+
+			"    ips: [\"127.0.0.1\", \"::1\"]\n"+
+			"    permissions:\n"+
+			"      - action: api\n"+
+			"      - action: metrics\n"+
+			"      - action: pprof\n"+
+			legacy)), nil, nil)
+	require.NoError(t, err)
+
+	require.Equal(t, ref.AuthInternalUsersComputed, conf.AuthInternalUsersComputed)
 }
 
 func TestConfDeprecatedWebRTCICEServersIPv6(t *testing.T) {
@@ -359,7 +427,8 @@ func TestConfDeprecatedWebRTCICEServersIPv6(t *testing.T) {
 		URL:      "turn:[2001:db8::1]:3478?transport=tcp",
 		Username: "myuser",
 		Password: "mypass",
-	}}, conf.WebRTCICEServers2)
+	}}, conf.WebRTCICEServers2Computed)
+	require.Empty(t, conf.WebRTCICEServers2)
 }
 
 func TestConfErrors(t *testing.T) {
@@ -408,6 +477,14 @@ func TestConfErrors(t *testing.T) {
 			"invalid ICE server",
 			"webrtcICEServers: [testing]\n",
 			"invalid ICE server: 'testing'",
+		},
+		{
+			"legacy and modern ICE servers",
+			"webrtcICEServers:\n" +
+				"- stun:old.example.com:3478\n" +
+				"webrtcICEServers2:\n" +
+				"- url: stun:new.example.com:3478\n",
+			"'webrtcICEServers' cannot be used together with 'webrtcICEServers2'",
 		},
 		{
 			"non existent parameter in path",
@@ -948,7 +1025,40 @@ func TestConfErrors(t *testing.T) {
 			"paths:\n" +
 				"  mypath:\n" +
 				"    source: rtsp://user@localhost/stream\n",
-			"username and password must be both provided",
+			"username was provided but password is missing; " +
+				"if the password is intentionally empty, use 'user:@host'",
+		},
+		{
+			"rtsp source password without username",
+			"paths:\n" +
+				"  mypath:\n" +
+				"    source: rtsp://:pass@localhost/stream\n",
+			"password was provided but username is missing",
+		},
+		{
+			"rtmp source username without password",
+			"paths:\n" +
+				"  mypath:\n" +
+				"    source: rtmp://user@localhost/stream\n",
+			"username was provided but password is missing; " +
+				"if the password is intentionally empty, use 'user:@host'",
+		},
+		{
+			"forward destination username without password",
+			"paths:\n" +
+				"  mypath:\n" +
+				"    forward:\n" +
+				"    - dest: rtsp://user@localhost/stream\n",
+			"invalid 'forward': entry 0: username was provided but password is missing; " +
+				"if the password is intentionally empty, use 'user:@host'",
+		},
+		{
+			"forward destination username with empty password",
+			"paths:\n" +
+				"  mypath:\n" +
+				"    forward:\n" +
+				"    - dest: rtsp://user:@localhost/stream\n",
+			"",
 		},
 		{
 			"valid moq forward destination",
@@ -1060,4 +1170,59 @@ func TestClone(t *testing.T) {
 
 	conf2 := conf1.Clone()
 	require.Equal(t, conf1, conf2)
+}
+
+func TestDefaultAuthInternalUsersIsNormalized(t *testing.T) {
+	conf, _, err := Load("", nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, defaultAuthInternalUsers, conf.AuthInternalUsers)
+}
+
+func TestConfDefaultsAreNotShared(t *testing.T) {
+	conf1, _, err := Load("", nil, nil)
+	require.NoError(t, err)
+
+	conf2, _, err := Load("", nil, nil)
+	require.NoError(t, err)
+
+	conf1.AuthInternalUsers[0].User = "modified"
+	conf1.AuthInternalUsers[0].Permissions[0].Path = "modified"
+
+	require.Equal(t, Credential("any"), conf2.AuthInternalUsers[0].User)
+	require.Equal(t, "", conf2.AuthInternalUsers[0].Permissions[0].Path)
+	require.Equal(t, Credential("any"), defaultAuthInternalUsers[0].User)
+	require.Equal(t, "", defaultAuthInternalUsers[0].Permissions[0].Path)
+}
+
+func TestConfAddDeprecatedWebRTCICEServersTwice(t *testing.T) {
+	c1, _, err := Load(createTempFile(t, []byte("paths:\n  test:\n")), nil, nil)
+	require.NoError(t, err)
+
+	var patch OptionalGlobal
+	require.NoError(t, json.Unmarshal([]byte(`{"webrtcICEServers":["stun:stun.example.com:3478"]}`), &patch))
+
+	c2 := c1.Clone()
+	require.NoError(t, c2.PatchGlobal(&patch))
+	require.Equal(t, []WebRTCICEServer{{URL: "stun:stun.example.com:3478"}}, c2.WebRTCICEServers2Computed)
+
+	c3 := c2.Clone()
+	require.NoError(t, c3.PatchGlobal(&patch))
+	require.Equal(t, c2, c3)
+}
+
+func TestConfAddDeprecatedCredentialsTwice(t *testing.T) {
+	c1, _, err := Load(createTempFile(t, []byte("paths:\n  test:\n")), nil, nil)
+	require.NoError(t, err)
+
+	var patch OptionalPath
+	require.NoError(t, json.Unmarshal([]byte(`{"publishUser":"publisher","publishPass":"secret"}`), &patch))
+
+	c2 := c1.Clone()
+	require.NoError(t, c2.PatchPath("test", &patch))
+	require.Len(t, c2.AuthInternalUsersComputed, 3)
+	require.Equal(t, Credential("publisher"), c2.AuthInternalUsersComputed[1].User)
+
+	c3 := c2.Clone()
+	require.NoError(t, c3.PatchPath("test", &patch))
+	require.Equal(t, c2, c3)
 }

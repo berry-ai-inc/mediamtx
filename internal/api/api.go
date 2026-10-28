@@ -2,6 +2,8 @@
 package api //nolint:revive
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/bluenviron/mediamtx/internal/auth"
 	"github.com/bluenviron/mediamtx/internal/conf"
@@ -48,19 +51,25 @@ func paramName(ctx *gin.Context) (string, bool) {
 }
 
 type apiAuthManager interface {
-	Authenticate(req *auth.Request) (string, *auth.Error)
+	Authenticate(req *auth.Request) (*auth.Result, *auth.Error)
 	RefreshJWTJWKS()
 }
 
 type apiParent interface {
 	logger.Writer
+	OnFatalError(context.Context, error)
 	APIConfigSnapshot() *conf.Conf
-	APIConfigGlobalPatch(conf.OptionalGlobal) error
-	APIConfigPathDefaultsPatch(conf.OptionalPath) error
-	APIConfigPathsAdd(string, conf.OptionalPath) error
-	APIConfigPathsPatch(string, conf.OptionalPath) error
-	APIConfigPathsReplace(string, conf.OptionalPath) error
-	APIConfigPathsDelete(string) error
+	APIConfigGlobalPatch(context.Context, conf.OptionalGlobal) error
+	APIConfigPathDefaultsPatch(context.Context, conf.OptionalPath) error
+	APIConfigPathsAdd(context.Context, string, conf.OptionalPath) error
+	APIConfigPathsPatch(context.Context, string, conf.OptionalPath) error
+	APIConfigPathsReplace(context.Context, string, conf.OptionalPath) error
+	APIConfigPathsDelete(context.Context, string) error
+	APIConfigInternalUsersSnapshot() ([]defs.APIInternalUser, error)
+	APIConfigInternalUsersAdd(context.Context, conf.AuthInternalUser) (uuid.UUID, error)
+	APIConfigInternalUsersPatch(context.Context, uuid.UUID, conf.OptionalAuthInternalUser) error
+	APIConfigInternalUsersReplace(context.Context, uuid.UUID, conf.AuthInternalUser) error
+	APIConfigInternalUsersDelete(context.Context, uuid.UUID) error
 }
 
 // API is an API server.
@@ -89,10 +98,14 @@ type API struct {
 	Parent         apiParent
 
 	httpServer *httpp.Server
+	ctx        context.Context
+	ctxCancel  func()
 }
 
 // Initialize initializes API.
 func (a *API) Initialize() error {
+	a.ctx, a.ctxCancel = context.WithCancel(context.Background())
+
 	router := gin.New()
 	router.SetTrustedProxies(a.TrustedProxies.ToTrustedProxies()) //nolint:errcheck
 	router.Use(a.middlewarePreflightRequests)
@@ -107,8 +120,19 @@ func (a *API) Initialize() error {
 	group.GET("/config/global/get", a.onConfigGlobalGet)
 	group.PATCH("/config/global/patch", a.onConfigGlobalPatch)
 
+	group.GET("/config/path-defaults/get", a.onConfigPathDefaultsGet)
+	group.PATCH("/config/path-defaults/patch", a.onConfigPathDefaultsPatch)
+
+	// deprecated
 	group.GET("/config/pathdefaults/get", a.onConfigPathDefaultsGet)
 	group.PATCH("/config/pathdefaults/patch", a.onConfigPathDefaultsPatch)
+
+	group.GET("/config/internal-users/list", a.onConfigInternalUsersList)
+	group.GET("/config/internal-users/get/:id", a.onConfigInternalUsersGet)
+	group.POST("/config/internal-users/add", a.onConfigInternalUsersAdd)
+	group.PATCH("/config/internal-users/patch/:id", a.onConfigInternalUsersPatch)
+	group.POST("/config/internal-users/replace/:id", a.onConfigInternalUsersReplace)
+	group.DELETE("/config/internal-users/delete/:id", a.onConfigInternalUsersDelete)
 
 	group.GET("/config/paths/list", a.onConfigPathsList)
 	group.GET("/config/paths/get/*name", a.onConfigPathsGet)
@@ -119,10 +143,22 @@ func (a *API) Initialize() error {
 
 	group.GET("/paths/list", a.onPathsList)
 	group.GET("/paths/get/*name", a.onPathsGet)
-	group.GET("/paths/forward/list", a.onForwardList)
-	group.GET("/paths/forward/get", a.onForwardGet)
+	group.GET("/paths/forward-dests/list", a.onForwardDestsList)
+	group.GET("/paths/forward-dests/get", a.onForwardDestsGet)
+	group.GET("/paths/static-sources/get/*name", a.onStaticSourcesGet)
+
+	// deprecated
+	group.GET("/paths/forward/list", a.onForwardDestsList)
+	group.GET("/paths/forward/get", a.onForwardDestsGet)
 
 	if !interfaceIsEmpty(a.HLSServer) {
+		group.GET("/hls/muxers/list", a.onHLSMuxersList)
+		group.GET("/hls/muxers/get/*name", a.onHLSMuxersGet)
+		group.GET("/hls/sessions/list", a.onHLSSessionsList)
+		group.GET("/hls/sessions/get/:id", a.onHLSSessionsGet)
+		group.POST("/hls/sessions/kick/:id", a.onHLSSessionsKick)
+
+		// deprecated
 		group.GET("/hlsmuxers/list", a.onHLSMuxersList)
 		group.GET("/hlsmuxers/get/*name", a.onHLSMuxersGet)
 		group.GET("/hlssessions/list", a.onHLSSessionsList)
@@ -131,6 +167,13 @@ func (a *API) Initialize() error {
 	}
 
 	if !interfaceIsEmpty(a.RTSPServer) {
+		group.GET("/rtsp/conns/list", a.onRTSPConnsList)
+		group.GET("/rtsp/conns/get/:id", a.onRTSPConnsGet)
+		group.GET("/rtsp/sessions/list", a.onRTSPSessionsList)
+		group.GET("/rtsp/sessions/get/:id", a.onRTSPSessionsGet)
+		group.POST("/rtsp/sessions/kick/:id", a.onRTSPSessionsKick)
+
+		// deprecated
 		group.GET("/rtspconns/list", a.onRTSPConnsList)
 		group.GET("/rtspconns/get/:id", a.onRTSPConnsGet)
 		group.GET("/rtspsessions/list", a.onRTSPSessionsList)
@@ -139,6 +182,13 @@ func (a *API) Initialize() error {
 	}
 
 	if !interfaceIsEmpty(a.RTSPSServer) {
+		group.GET("/rtsps/conns/list", a.onRTSPSConnsList)
+		group.GET("/rtsps/conns/get/:id", a.onRTSPSConnsGet)
+		group.GET("/rtsps/sessions/list", a.onRTSPSSessionsList)
+		group.GET("/rtsps/sessions/get/:id", a.onRTSPSSessionsGet)
+		group.POST("/rtsps/sessions/kick/:id", a.onRTSPSSessionsKick)
+
+		// deprecated
 		group.GET("/rtspsconns/list", a.onRTSPSConnsList)
 		group.GET("/rtspsconns/get/:id", a.onRTSPSConnsGet)
 		group.GET("/rtspssessions/list", a.onRTSPSSessionsList)
@@ -147,30 +197,55 @@ func (a *API) Initialize() error {
 	}
 
 	if !interfaceIsEmpty(a.RTMPServer) {
+		group.GET("/rtmp/conns/list", a.onRTMPConnsList)
+		group.GET("/rtmp/conns/get/:id", a.onRTMPConnsGet)
+		group.POST("/rtmp/conns/kick/:id", a.onRTMPConnsKick)
+
+		// deprecated
 		group.GET("/rtmpconns/list", a.onRTMPConnsList)
 		group.GET("/rtmpconns/get/:id", a.onRTMPConnsGet)
 		group.POST("/rtmpconns/kick/:id", a.onRTMPConnsKick)
 	}
 
 	if !interfaceIsEmpty(a.RTMPSServer) {
+		group.GET("/rtmps/conns/list", a.onRTMPSConnsList)
+		group.GET("/rtmps/conns/get/:id", a.onRTMPSConnsGet)
+		group.POST("/rtmps/conns/kick/:id", a.onRTMPSConnsKick)
+
+		// deprecated
 		group.GET("/rtmpsconns/list", a.onRTMPSConnsList)
 		group.GET("/rtmpsconns/get/:id", a.onRTMPSConnsGet)
 		group.POST("/rtmpsconns/kick/:id", a.onRTMPSConnsKick)
 	}
 
 	if !interfaceIsEmpty(a.WebRTCServer) {
+		group.GET("/webrtc/sessions/list", a.onWebRTCSessionsList)
+		group.GET("/webrtc/sessions/get/:id", a.onWebRTCSessionsGet)
+		group.POST("/webrtc/sessions/kick/:id", a.onWebRTCSessionsKick)
+
+		// deprecated
 		group.GET("/webrtcsessions/list", a.onWebRTCSessionsList)
 		group.GET("/webrtcsessions/get/:id", a.onWebRTCSessionsGet)
 		group.POST("/webrtcsessions/kick/:id", a.onWebRTCSessionsKick)
 	}
 
 	if !interfaceIsEmpty(a.SRTServer) {
+		group.GET("/srt/conns/list", a.onSRTConnsList)
+		group.GET("/srt/conns/get/:id", a.onSRTConnsGet)
+		group.POST("/srt/conns/kick/:id", a.onSRTConnsKick)
+
+		// deprecated
 		group.GET("/srtconns/list", a.onSRTConnsList)
 		group.GET("/srtconns/get/:id", a.onSRTConnsGet)
 		group.POST("/srtconns/kick/:id", a.onSRTConnsKick)
 	}
 
 	if !interfaceIsEmpty(a.MoQServer) {
+		group.GET("/moq/sessions/list", a.onMoQSessionsList)
+		group.GET("/moq/sessions/get/:id", a.onMoQSessionsGet)
+		group.POST("/moq/sessions/kick/:id", a.onMoQSessionsKick)
+
+		// deprecated
 		group.GET("/moqsessions/list", a.onMoQSessionsList)
 		group.GET("/moqsessions/get/:id", a.onMoQSessionsGet)
 		group.POST("/moqsessions/kick/:id", a.onMoQSessionsKick)
@@ -178,7 +253,10 @@ func (a *API) Initialize() error {
 
 	group.GET("/recordings/list", a.onRecordingsList)
 	group.GET("/recordings/get/*name", a.onRecordingsGet)
-	group.DELETE("/recordings/deletesegment", a.onRecordingDeleteSegment)
+	group.DELETE("/recordings/segments/delete", a.onRecordingsSegmentsDelete)
+
+	// deprecated
+	group.DELETE("/recordings/deletesegment", a.onRecordingsSegmentsDelete)
 
 	a.httpServer = &httpp.Server{
 		Address:           a.Address,
@@ -192,9 +270,11 @@ func (a *API) Initialize() error {
 		ServerKey:         a.ServerKey,
 		Handler:           router,
 		Parent:            a,
+		OnListenError:     a.onListenError,
 	}
 	err := a.httpServer.Initialize()
 	if err != nil {
+		a.ctxCancel()
 		return err
 	}
 
@@ -213,9 +293,16 @@ func (a *API) Initialize() error {
 func (a *API) Close() {
 	a.Log(logger.Info, "closing")
 
+	a.ctxCancel()
+
 	a.httpServer.Close()
 
 	a.Log(logger.Debug, "closed")
+}
+
+func (a *API) onListenError(ctx context.Context, err error) {
+	a.Log(logger.Error, "%s", err)
+	a.Parent.OnFatalError(ctx, err)
 }
 
 // Log implements logger.Writer.
@@ -232,6 +319,17 @@ func (a *API) writeError(ctx *gin.Context, status int, err error) {
 		Status: defs.APIErrorStatusError,
 		Error:  err.Error(),
 	})
+}
+
+func (a *API) writeConfigWriteError(ctx *gin.Context, err error) {
+	switch {
+	case errors.Is(err, context.Canceled):
+		a.writeError(ctx, http.StatusServiceUnavailable, fmt.Errorf("API is closing, retry"))
+	case errors.Is(err, conf.ErrPathNotFound):
+		a.writeError(ctx, http.StatusNotFound, err)
+	default:
+		a.writeError(ctx, http.StatusBadRequest, err)
+	}
 }
 
 func (a *API) writeErrorNoLog(ctx *gin.Context, status int, err error) {
@@ -256,10 +354,13 @@ func (a *API) middlewarePreflightRequests(ctx *gin.Context) {
 }
 
 func (a *API) middlewareAuth(ctx *gin.Context) {
+	creds := &auth.Credentials{}
+	creds.FromHTTP(ctx.Request)
+
 	req := &auth.Request{
 		Action:               conf.AuthActionAPI,
 		Query:                ctx.Request.URL.RawQuery,
-		Credentials:          httpp.Credentials(ctx.Request),
+		Credentials:          creds,
 		IP:                   net.ParseIP(ctx.ClientIP()),
 		EnableAskCredentials: true,
 	}
