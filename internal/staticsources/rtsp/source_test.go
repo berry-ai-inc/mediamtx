@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -864,4 +865,280 @@ func TestSourceMPEGTSDemux(t *testing.T) {
 	playCancel()
 	closeParent()
 	reloadConf <- nil
+}
+
+// berry's, unbracketed IPv6 host in a SDP control attribute
+func TestUnbracketedIPv6Control(t *testing.T) {
+	var strm *gortsplib.ServerStream
+
+	media0 := test.UniqueMediaH264()
+
+	// SDP of a camera that writes its IPv6 address without square brackets.
+	desc := description.Session{Medias: []*description.Media{{
+		Type:    description.MediaTypeVideo,
+		Control: "rtsp://fe80::20f:7cff:fe1b:eee4/teststream/trackID=0",
+		Formats: []format.Format{test.FormatH264},
+	}}}
+	sdp, err := desc.Marshal()
+	require.NoError(t, err)
+	// the control attribute is written as given, without normalization.
+	require.Contains(t, string(sdp), "a=control:rtsp://fe80::20f:7cff:fe1b:eee4/teststream/trackID=0\r\n")
+
+	s := gortsplib.Server{
+		Handler: &testServer{
+			onDescribe: func(_ *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
+				// with a nil stream, the server sends this body as is.
+				return &base.Response{
+					StatusCode: base.StatusOK,
+					Body:       sdp,
+				}, nil, nil
+			},
+			onSetup: func(_ *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
+				return &base.Response{
+					StatusCode: base.StatusOK,
+				}, strm, nil
+			},
+			onPlay: func(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					err2 := strm.WritePacketRTP(media0, &rtp.Packet{
+						Version:        0x02,
+						PayloadType:    96,
+						SequenceNumber: 57899,
+						Timestamp:      345234345,
+						SSRC:           978651231,
+						Marker:         true,
+						Payload:        []byte{5, 1, 2, 3, 4},
+					})
+					require.NoError(t, err2)
+				}()
+
+				return &base.Response{
+					StatusCode: base.StatusOK,
+				}, nil
+			},
+		},
+		RTSPAddress: "127.0.0.1:8555",
+	}
+
+	err = s.Start()
+	require.NoError(t, err)
+	defer s.Close()
+
+	strm = &gortsplib.ServerStream{
+		Server: &s,
+		Desc:   &description.Session{Medias: []*description.Media{media0}},
+	}
+	err = strm.Initialize()
+	require.NoError(t, err)
+	defer strm.Close()
+
+	var sp conf.RTSPTransport
+	sp.UnmarshalJSON([]byte(`"tcp"`)) //nolint:errcheck
+
+	p := &test.StaticSourceParent{}
+	p.Initialize()
+	defer p.Close()
+
+	so := &rtsp.Source{
+		ReadTimeout:    conf.Duration(10 * time.Second),
+		WriteTimeout:   conf.Duration(10 * time.Second),
+		WriteQueueSize: 2048,
+		Parent:         p,
+	}
+
+	done := make(chan struct{})
+	defer func() { <-done }()
+
+	ctx, ctxCancel := context.WithCancel(context.Background())
+	defer ctxCancel()
+
+	go func() {
+		so.Run(defs.StaticSourceRunParams{ //nolint:errcheck
+			Context:        ctx,
+			ResolvedSource: "rtsp://127.0.0.1:8555/teststream",
+			Conf: &conf.Path{
+				RTSPTransport:          sp,
+				RTSPUDPSourcePortRange: []uint{32768, 60999},
+			},
+		})
+		close(done)
+	}()
+
+	// a packet arrives only after SETUP on the rewritten control URL succeeded.
+	<-p.Unit
+}
+
+// berry's, unbracketed IPv6 host in Content-Base
+func TestUnbracketedIPv6ContentBase(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:8555")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	sdp, err := (&description.Session{Medias: []*description.Media{{
+		Type:    description.MediaTypeVideo,
+		Control: "trackID=0",
+		Formats: []format.Format{test.FormatH264},
+	}}}).Marshal()
+	require.NoError(t, err)
+
+	// the client builds the SETUP URL from Content-Base; this carries the one it sent.
+	setupURL := make(chan string, 1)
+
+	// RTSP server of a camera that writes its IPv6 address without square brackets in Content-Base.
+	// The gortsplib server always sets Content-Base itself, hence the raw one.
+	serverDone := make(chan struct{})
+	defer func() { <-serverDone }()
+
+	go func() {
+		defer close(serverDone)
+
+		conn, err2 := ln.Accept()
+		if err2 != nil {
+			return
+		}
+		defer conn.Close()
+
+		br := bufio.NewReader(conn)
+
+		for {
+			var req base.Request
+			err2 = req.Unmarshal(br)
+			if err2 != nil {
+				return
+			}
+
+			res := base.Response{
+				StatusCode: base.StatusOK,
+				Header:     base.Header{"CSeq": req.Header["CSeq"]},
+			}
+
+			switch req.Method {
+			case base.Options:
+				res.Header["Public"] = base.HeaderValue{"DESCRIBE, SETUP, PLAY"}
+
+			case base.Describe:
+				res.Header["Content-Base"] = base.HeaderValue{"rtsp://fe80::20f:7cff:fe1b:eee4/teststream/"}
+				res.Header["Content-Type"] = base.HeaderValue{"application/sdp"}
+				res.Body = sdp
+
+			case base.Setup:
+				setupURL <- req.URL.String()
+				res.Header["Transport"] = base.HeaderValue{"RTP/AVP/TCP;unicast;interleaved=0-1"}
+				res.Header["Session"] = base.HeaderValue{"12345678"}
+
+			case base.Play:
+				res.Header["Session"] = base.HeaderValue{"12345678"}
+			}
+
+			var byts []byte
+			byts, err2 = res.Marshal()
+			require.NoError(t, err2)
+
+			_, err2 = conn.Write(byts)
+			if err2 != nil {
+				return
+			}
+
+			// one RTP packet on the interleaved channel, to make the source ready.
+			if req.Method == base.Play {
+				var pkt []byte
+				pkt, err2 = (&rtp.Packet{
+					Version:        0x02,
+					PayloadType:    96,
+					SequenceNumber: 57899,
+					Timestamp:      345234345,
+					SSRC:           978651231,
+					Marker:         true,
+					Payload:        []byte{5, 1, 2, 3, 4},
+				}).Marshal()
+				require.NoError(t, err2)
+
+				byts, err2 = base.InterleavedFrame{Channel: 0, Payload: pkt}.Marshal()
+				require.NoError(t, err2)
+
+				_, err2 = conn.Write(byts)
+				if err2 != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	var sp conf.RTSPTransport
+	sp.UnmarshalJSON([]byte(`"tcp"`)) //nolint:errcheck
+
+	p := &test.StaticSourceParent{}
+	p.Initialize()
+	defer p.Close()
+
+	so := &rtsp.Source{
+		ReadTimeout:    conf.Duration(10 * time.Second),
+		WriteTimeout:   conf.Duration(10 * time.Second),
+		WriteQueueSize: 2048,
+		Parent:         p,
+	}
+
+	done := make(chan struct{})
+	defer func() { <-done }()
+
+	ctx, ctxCancel := context.WithCancel(context.Background())
+	defer ctxCancel()
+
+	go func() {
+		so.Run(defs.StaticSourceRunParams{ //nolint:errcheck
+			Context:        ctx,
+			ResolvedSource: "rtsp://127.0.0.1:8555/teststream",
+			Conf: &conf.Path{
+				RTSPTransport:          sp,
+				RTSPUDPSourcePortRange: []uint{32768, 60999},
+			},
+		})
+		close(done)
+	}()
+
+	<-p.Unit
+	require.Equal(t, "rtsp://[fe80::20f:7cff:fe1b:eee4]/teststream/trackID=0", <-setupURL)
+}
+
+// berry's, unbracketed IPv6 host in Location
+func TestUnbracketedIPv6Location(t *testing.T) {
+	s := gortsplib.Server{
+		Handler: &testServer{
+			onDescribe: func(_ *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
+				return &base.Response{
+					StatusCode: base.StatusFound,
+					Header: base.Header{
+						"Location": base.HeaderValue{"rtsp://fe80::aaaa/teststream"},
+					},
+				}, nil, nil
+			},
+		},
+		RTSPAddress: "127.0.0.1:8555",
+	}
+
+	err := s.Start()
+	require.NoError(t, err)
+	defer s.Close()
+
+	p := &test.StaticSourceParent{}
+	p.Initialize()
+
+	so := &rtsp.Source{
+		ReadTimeout:    conf.Duration(10 * time.Second),
+		WriteTimeout:   conf.Duration(10 * time.Second),
+		WriteQueueSize: 2048,
+		Parent:         p,
+	}
+
+	// a link-local target without a zone is not dialable on any host;
+	// the dial error shows the client parsed and followed the redirect.
+	err = so.Run(defs.StaticSourceRunParams{
+		Context:        context.Background(),
+		ResolvedSource: "rtsp://127.0.0.1:8555/teststream",
+		Conf: &conf.Path{
+			RTSPUDPSourcePortRange: []uint{32768, 60999},
+		},
+	})
+	require.ErrorContains(t, err, "dial tcp [fe80::aaaa]:554")
 }

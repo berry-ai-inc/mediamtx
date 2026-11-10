@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +26,26 @@ import (
 	ptls "github.com/bluenviron/mediamtx/internal/protocols/tls"
 	"github.com/bluenviron/mediamtx/internal/stream"
 )
+
+// berry's, some cameras write their IPv6 address without square brackets in
+// the URLs they send: SDP control attributes, Content-Base, Location.
+// Group 1 is the scheme, group 2 the host: hex digits and colons, with
+// at least two colons.
+var reUnbracketedIPv6Host = regexp.MustCompile(`^(rtsps?://)([0-9a-fA-F]*:[0-9a-fA-F]*:[0-9a-fA-F:]*)`)
+
+// berry's, absolute control attributes in a SDP body.
+var reControlURL = regexp.MustCompile(`(?m)^a=control:rtsps?://\S*`)
+
+// bracketIPv6Host adds square brackets around a bare IPv6 host.
+// berry's, url.Parse reads the text after the last colon as the port, so a
+// bare host with a port, or whose last group is decimal, already parses
+// as intended. Only a URL that fails to parse is rewritten.
+func bracketIPv6Host(u string) string {
+	if _, err := url.Parse(u); err == nil {
+		return u
+	}
+	return reUnbracketedIPv6Host.ReplaceAllString(u, "${1}[${2}]")
+}
 
 func createRangeHeader(cnf *conf.Path) (*headers.Range, error) {
 	switch cnf.RTSPRangeType {
@@ -202,6 +223,18 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		},
 		OnResponse: func(res *base.Response) {
 			s.Log(logger.Debug, "[s->c] %v", res)
+
+			// berry's, gortsplib parses the SDP body and these two headers after
+			// this callback returns, so the rewrite is what it sees.
+			res.Body = reControlURL.ReplaceAllFunc(res.Body, func(line []byte) []byte {
+				const prefix = "a=control:"
+				return []byte(prefix + bracketIPv6Host(string(line[len(prefix):])))
+			})
+			for _, key := range []string{"Content-Base", "Location"} {
+				for i, v := range res.Header[key] {
+					res.Header[key][i] = bracketIPv6Host(v)
+				}
+			}
 		},
 		OnTransportSwitch: func(err error) {
 			s.Log(logger.Warn, err.Error())
